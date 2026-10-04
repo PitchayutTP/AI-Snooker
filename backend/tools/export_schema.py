@@ -2,6 +2,7 @@
 from sqlalchemy.schema import CreateTable, CreateIndex
 from sqlalchemy.dialects import postgresql
 from app.database import Base
+import app.auth
 
 if __name__=='__main__':
     dialect=postgresql.dialect()
