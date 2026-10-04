@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from sqlalchemy import create_engine, String, Integer, Float, ForeignKey, JSON, UniqueConstraint, event
+from sqlalchemy import create_engine, String, Integer, Float, ForeignKey, JSON, UniqueConstraint, event, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -132,3 +132,10 @@ def init_db():
             from sqlalchemy import select
             if not db.scalar(select(MetricDefinition).where(MetricDefinition.code==code)):
                 db.add(MetricDefinition(code=code,unit=unit,definition=code))
+        # Earlier versions explicitly seeded profile 1. Advance PostgreSQL's
+        # sequence before accounts allocate new profiles; preserve existing rows.
+        if engine.dialect.name == 'postgresql':
+            db.flush()
+            db.execute(text("SELECT setval(pg_get_serial_sequence('profiles', 'id'), "
+                            "GREATEST((SELECT COALESCE(MAX(id), 1) FROM profiles), "
+                            "(SELECT last_value FROM profiles_id_seq)), true)"))

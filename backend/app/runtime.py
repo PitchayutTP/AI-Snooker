@@ -7,6 +7,7 @@ class Runtime:
     def __init__(self):
         self.lock=threading.RLock(); self.stop_event=threading.Event()
         self.thread=None; self.latest=None; self.samples=[]; self.collecting=False
+        self.owner_profile_id=None
         self.config={}; self.error=None; self.session_id=None; self.attempt_id=None
 
     def start(self, config):

@@ -8,13 +8,14 @@ from functools import wraps
 from contextlib import asynccontextmanager
 from typing import Literal
 from uuid import uuid4, UUID
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select, func
 from .database import (DB, init_db, now, Module, Exercise, Criteria, TrainingSession,
                        Attempt, Measurement, MetricDefinition, METRICS)
+from .auth import router as auth_router, identity, COOKIE, ORIGINS
 from .runtime import runtime
 from .metrics import summarize, evaluate, stats
 from .vision import ball_metrics, cue_metrics
@@ -35,7 +36,46 @@ async def lifespan(app):
 
 app=FastAPI(title='Snooker Practice',lifespan=lifespan)
 app.add_middleware(CORSMiddleware,allow_origins=['http://localhost:5173','http://127.0.0.1:5173'],
-                   allow_methods=['GET','POST'],allow_headers=['Content-Type'])
+                   allow_methods=['GET','POST'],allow_headers=['Content-Type'],allow_credentials=True)
+
+app.include_router(auth_router)
+
+
+@app.middleware('http')
+async def authentication(request: Request, call_next):
+    if request.url.path.startswith('/api/'):
+        origin = request.headers.get('origin')
+        if request.method not in ('GET', 'HEAD', 'OPTIONS'):
+            if (origin and origin not in ORIGINS) or request.headers.get('sec-fetch-site') == 'cross-site':
+                return JSONResponse({'detail': 'ไม่อนุญาตคำขอจากเว็บไซต์อื่น'}, status_code=403)
+        request.state.user = identity(request.cookies.get(COOKIE))
+        public = {'/api/health', '/api/auth/login', '/api/auth/register', '/api/auth/logout'}
+        if request.method != 'OPTIONS' and request.url.path not in public and not request.state.user:
+            return JSONResponse({'detail': 'กรุณาเข้าสู่ระบบ'}, status_code=401)
+    response = await call_next(request)
+    if request.url.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+def current_user(request: Request):
+    return request.state.user
+
+
+def owned_session(db, sid, user):
+    session = require(db, TrainingSession, sid)
+    if session.profile_id != user['profile_id']:
+        raise HTTPException(404, 'ไม่พบข้อมูล')
+    return session
+
+
+def private_snapshot(user):
+    with runtime.lock:
+        if runtime.owner_profile_id != user['profile_id']:
+            return {'ready': False, 'frame': {}, 'session_id': None, 'attempt_id': None,
+                    'samples': 0, 'collecting': False, 'busy': bool(runtime.session_id)}
+        return runtime.snapshot()
+
 
 operation_lock=threading.RLock()
 def serialized(fn):
@@ -130,7 +170,7 @@ def require(db, model, key):
 
 
 @app.get('/api/health')
-def health(): return {'status':'ok','version':'0.1.0','scope':'local single user'}
+def health(): return {'status':'ok','version':'0.1.0','scope':'local accounts, one training device'}
 
 
 @app.get('/api/catalog')
@@ -162,7 +202,7 @@ def new_criteria(eid:int, body:CriteriaRequest):
 
 @app.post('/api/readiness')
 @serialized
-def readiness(body:ReadyRequest):
+def readiness(body:ReadyRequest, user=Depends(current_user)):
     # Do not hold the worker lock while joining the previous worker.
     if runtime.session_id: raise HTTPException(409,'ต้องจบรอบฝึกก่อนเปลี่ยนกล้อง')
     with DB() as db:
@@ -186,25 +226,31 @@ def readiness(body:ReadyRequest):
                 raise HTTPException(422,'กรุณาระบุ homography ขนาดโต๊ะ และรัศมีลูกในหน่วยเดียวกัน')
             if exercise.module_id==4 and (not config['escape_rail'] or not config['setup_notes'] or not config['expected_obstacles']):
                 raise HTTPException(422,'ต้องระบุชิ่งและบันทึกแผนผังจัดลูกของรูปแบบนี้')
-        try: runtime.start(config)
+        try:
+            runtime.stop()
+            with runtime.lock:
+                runtime.owner_profile_id=user['profile_id']
+            runtime.start(config)
         except Exception as exc: raise HTTPException(400,str(exc)) from exc
     return {'status':'STARTING','note':'รอสถานะพร้อมจากภาพจริงก่อนเริ่มรอบ'}
 
 
 @app.post('/api/sessions')
 @serialized
-def start_session(body:StartRequest):
+def start_session(body:StartRequest, user=Depends(current_user)):
     sid=str(body.request_id)
     with runtime.lock,DB.begin() as db:
         old=db.get(TrainingSession,sid)
         if old:
+            owned_session(db, sid, user)
             if old.criteria_id!=body.criteria_id: raise HTTPException(409,'request_id ถูกใช้กับคำขออื่นแล้ว')
             return {'id':old.id,'status':old.status}
         if runtime.session_id: raise HTTPException(409,'มีรอบฝึกที่ยังไม่จบ')
+        if runtime.owner_profile_id != user['profile_id']: raise HTTPException(409,'กรุณาตรวจความพร้อมด้วยบัญชีนี้ก่อน')
         if not runtime.snapshot()['ready']: raise HTTPException(409,'กล้องหรือข้อมูลยังไม่พร้อม')
         c=require(db,Criteria,body.criteria_id)
         if c.exercise_id!=runtime.config['exercise_id']: raise HTTPException(409,'เกณฑ์ไม่ตรงกับแบบฝึกที่ตรวจความพร้อม')
-        s=TrainingSession(id=sid,profile_id=1,criteria_id=c.id,configuration_snapshot=dict(runtime.config))
+        s=TrainingSession(id=sid,profile_id=user['profile_id'],criteria_id=c.id,configuration_snapshot=dict(runtime.config))
         db.add(s)
     runtime.session_id=sid
     return {'id':sid,'status':'IN_PROGRESS'}
@@ -212,11 +258,13 @@ def start_session(body:StartRequest):
 
 @app.post('/api/sessions/{sid}/attempts')
 @serialized
-def begin_attempt(sid:str,body:AttemptRequest):
+def begin_attempt(sid:str,body:AttemptRequest, user=Depends(current_user)):
     aid=str(body.request_id)
     with runtime.lock, DB.begin() as db:
+        owned_session(db, sid, user)
         old=db.get(Attempt,aid)
         if old:
+            owned_session(db, old.session_id, user)
             if old.session_id!=sid: raise HTTPException(409,'request_id ถูกใช้ในรอบอื่น')
             return {'id':old.id,'status':old.result_status}
         s=require(db,TrainingSession,sid)
@@ -231,10 +279,11 @@ def begin_attempt(sid:str,body:AttemptRequest):
 
 @app.post('/api/attempts/{aid}/finish')
 @serialized
-def finish_attempt(aid:str,body:FinishRequest):
+def finish_attempt(aid:str,body:FinishRequest, user=Depends(current_user)):
     with runtime.lock:
         with DB.begin() as db:
             a=require(db,Attempt,aid)
+            owned_session(db, a.session_id, user)
             if a.result_status!='IN_PROGRESS': return {'id':aid,'status':a.result_status,'reason':a.result_reason}
             if runtime.attempt_id!=aid: raise HTTPException(409,'ไม่ใช่ครั้งที่กำลังบันทึก')
             # Freeze samples; a failed database commit can retry the exact same evidence.
@@ -266,16 +315,18 @@ def finish_attempt(aid:str,body:FinishRequest):
 
 @app.post('/api/sessions/{sid}/finish')
 @serialized
-def finish_session(sid:str,body:FinishRequest):
+def finish_session(sid:str,body:FinishRequest, user=Depends(current_user)):
+    with DB() as db:
+        owned_session(db, sid, user)
     with runtime.lock:
         if runtime.session_id==sid and runtime.attempt_id:
-            finish_attempt(runtime.attempt_id,FinishRequest(aborted=True))
+            finish_attempt(runtime.attempt_id,FinishRequest(aborted=True),user)
         with DB.begin() as db:
             s=require(db,TrainingSession,sid)
             if s.status=='IN_PROGRESS':
                 s.status='ABORTED' if body.aborted else 'COMPLETED'; s.ended_at=now()
         if runtime.session_id==sid: runtime.session_id=None
-    return session_detail(sid)
+    return session_detail(sid,user)
 
 
 def detail(db,s):
@@ -299,20 +350,20 @@ def detail(db,s):
 
 
 @app.get('/api/sessions')
-def sessions():
+def sessions(user=Depends(current_user)):
     with DB() as db:
-        return [detail(db,s) for s in db.scalars(select(TrainingSession).order_by(TrainingSession.started_at.desc()).limit(100))]
+        return [detail(db,s) for s in db.scalars(select(TrainingSession).where(TrainingSession.profile_id==user['profile_id']).order_by(TrainingSession.started_at.desc()).limit(100))]
 
 
 @app.get('/api/sessions/{sid}')
-def session_detail(sid:str):
-    with DB() as db: return detail(db,require(db,TrainingSession,sid))
+def session_detail(sid:str, user=Depends(current_user)):
+    with DB() as db: return detail(db,owned_session(db,sid,user))
 
 
 @app.get('/api/sessions/{sid}/export')
-def export(sid:str):
+def export(sid:str, user=Depends(current_user)):
     with DB() as db:
-        result=detail(db,require(db,TrainingSession,sid))
+        result=detail(db,owned_session(db,sid,user))
         result['evidence']=[{'attempt_id':a.id,**a.evidence} for a in
                             db.scalars(select(Attempt).where(Attempt.session_id==sid))]
     return Response(json.dumps(result,ensure_ascii=False,allow_nan=False),media_type='application/json',
@@ -320,8 +371,8 @@ def export(sid:str):
 
 
 @app.get('/api/compare')
-def compare(left:str,right:str):
-    a=session_detail(left); b=session_detail(right)
+def compare(left:str,right:str, user=Depends(current_user)):
+    a=session_detail(left,user); b=session_detail(right,user)
     if a['status']=='IN_PROGRESS' or b['status']=='IN_PROGRESS': raise HTTPException(409,'จบรอบก่อนเปรียบเทียบ')
     if a['criteria_id']!=b['criteria_id'] or a['config']!=b['config']:
         raise HTTPException(409,'แบบฝึก รุ่นเกณฑ์ หรือการตั้งค่าต่างกัน จึงไม่เปรียบเทียบโดยตรง')
@@ -334,17 +385,21 @@ def compare(left:str,right:str):
 
 
 @app.get('/api/status')
-def status(): return runtime.snapshot()
+def status(user=Depends(current_user)): return private_snapshot(user)
 
 
 @app.websocket('/ws')
 async def websocket(ws:WebSocket):
     origin=ws.headers.get('origin')
-    if origin not in ['http://localhost:5173','http://127.0.0.1:5173']:
+    token=ws.cookies.get(COOKIE)
+    if origin not in ORIGINS or not identity(token):
         await ws.close(code=1008); return
     await ws.accept()
     try:
         while True:
-            await ws.send_json(runtime.snapshot())
+            user=identity(token)
+            if not user:
+                await ws.close(code=1008); return
+            await ws.send_json(private_snapshot(user))
             await asyncio.sleep(.1)
     except WebSocketDisconnect: pass
