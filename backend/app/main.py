@@ -19,6 +19,7 @@ from .auth import router as auth_router, identity, COOKIE, ORIGINS
 from .runtime import runtime
 from .metrics import summarize, evaluate, stats
 from .vision import ball_metrics, cue_metrics
+from .lessons import LESSONS, feedback
 
 
 @asynccontextmanager
@@ -93,6 +94,13 @@ class CaptureConfig(BaseModel):
     top_source: str='1'
     pose_model: str='models/pose_landmarker.task'
     ball_model: str='models/snooker.pt'
+    ball_detector: Literal['HSV','YOLO']='HSV'
+    ball_colours: dict[str,list[dict]]=Field(default_factory=lambda: {
+        'cue_ball':[{'lower':[0,0,160],'upper':[179,75,255]}],
+        'target_ball':[{'lower':[0,110,70],'upper':[10,255,255]},{'lower':[170,110,70],'upper':[179,255,255]}]})
+    ball_min_area: float=Field(default=50,gt=0,allow_inf_nan=False)
+    ball_max_area: float=Field(default=5000,gt=0,allow_inf_nan=False)
+    ball_max_jump: float=Field(default=120,gt=0,allow_inf_nan=False)
     visibility: float=Field(default=.7,ge=0,le=1,allow_inf_nan=False)
     baseline_seconds: float=Field(default=1.,ge=.5,le=10,allow_inf_nan=False)
     sync_tolerance_ms: float=Field(default=100,gt=0,le=1000,allow_inf_nan=False)
@@ -113,6 +121,15 @@ class CaptureConfig(BaseModel):
     setup_notes: str=Field(default='',max_length=2000)
     @model_validator(mode='after')
     def geometry(self):
+        if self.ball_min_area >= self.ball_max_area: raise ValueError('ball_min_area ต้องน้อยกว่า ball_max_area')
+        if self.ball_detector=='HSV':
+            if set(self.ball_colours)!={'cue_ball','target_ball'}: raise ValueError('HSV ต้องกำหนดลูกขาวและลูกเป้าอย่างละหนึ่งบทบาท')
+            for ranges in self.ball_colours.values():
+                if not ranges or len(ranges)>4: raise ValueError('ต้องมีช่วงสี 1–4 ช่วงต่อบทบาท')
+                for bounds in ranges:
+                    lo,hi=bounds.get('lower',[]),bounds.get('upper',[])
+                    if len(lo)!=3 or len(hi)!=3 or any(type(x) is not int for x in lo+hi): raise ValueError('HSV ต้องเป็นจำนวนเต็มสามค่า')
+                    if any(a<0 or b>limit or a>b for a,b,limit in zip(lo,hi,[179,255,255])): raise ValueError('ช่วง HSV ไม่ถูกต้อง')
         if self.homography is not None:
             import numpy as np
             h=np.asarray(self.homography,dtype=float)
@@ -170,7 +187,7 @@ def require(db, model, key):
 
 
 @app.get('/api/health')
-def health(): return {'status':'ok','version':'0.1.0','scope':'local accounts, one training device'}
+def health(): return {'status':'ok','version':'0.2.0','scope':'local accounts, one training device'}
 
 
 @app.get('/api/catalog')
@@ -178,9 +195,10 @@ def catalog():
     with DB() as db:
         return [{'id':e.id,'module_id':e.module_id,'module':db.get(Module,e.module_id).name,
                  'name':e.name,'instructions':e.instructions,'setup':e.setup_definition,
+                 'lesson':LESSONS.get(e.module_id,{}),
                  'criteria':[{'id':c.id,'version':c.version_no,**c.definition} for c in
                     db.scalars(select(Criteria).where(Criteria.exercise_id==e.id).order_by(Criteria.version_no.desc()))]}
-                for e in db.scalars(select(Exercise).order_by(Exercise.id))]
+                for e in db.scalars(select(Exercise).where(Exercise.module_id<=3).order_by(Exercise.id))]
 
 
 @app.get('/api/metrics')
@@ -195,6 +213,9 @@ def new_criteria(eid:int, body:CriteriaRequest):
     with runtime.lock, DB.begin() as db:
         require(db,Exercise,eid)
         version=(db.scalar(select(func.max(Criteria.version_no)).where(Criteria.exercise_id==eid)) or 0)+1
+        exercise=require(db,Exercise,eid)
+        if exercise.module_id not in LESSONS: raise HTTPException(409,'prototype นี้ยังไม่เปิดแบบฝึกแก้สนุก')
+        if any(k not in LESSONS[exercise.module_id]['metrics'] for k in body.rules): raise HTTPException(422,'ตัวชี้วัดไม่ตรงกับบทเรียน')
         c=Criteria(exercise_id=eid,version_no=version,definition=body.model_dump(exclude_none=True))
         db.add(c); db.flush()
         return {'id':c.id,'version':version}
@@ -207,17 +228,20 @@ def readiness(body:ReadyRequest, user=Depends(current_user)):
     if runtime.session_id: raise HTTPException(409,'ต้องจบรอบฝึกก่อนเปลี่ยนกล้อง')
     with DB() as db:
         exercise=require(db,Exercise,body.exercise_id)
+        if exercise.module_id not in LESSONS: raise HTTPException(409,'prototype นี้ยังไม่เปิดแบบฝึกแก้สนุก')
         config=body.config.model_dump()
+        if config['mode']=='LIVE' and exercise.module_id==2 and len(config['cue_markers'])!=2:
+            raise HTTPException(422,'การส่งคิว LIVE ต้องตั้งค่า cue_markers สองสีเรียงด้านปลายคิวก่อนด้านท้าย')
         config.update(required=exercise.setup_definition['requires'],exercise_id=exercise.id)
         if exercise.module_id==2 and config['delivery_ball_timing']:
             if not config['cue_markers'] or config['motion_threshold']<=0:
                 raise HTTPException(422,'การประมาณ Follow-through ต้องมี marker และเกณฑ์เริ่มเคลื่อนลูกจากการนำร่อง')
             config['required']=['side','top']
-        config['software_version']='prototype-v0.1'
+        config['software_version']='prototype-3modules-v0.2'
         if config['mode']=='LIVE':
             hashes={}
             for camera,key in [('side','pose_model'),('top','ball_model')]:
-                if camera in config['required'] and Path(config[key]).is_file():
+                if camera in config['required'] and (key!='ball_model' or config['ball_detector']=='YOLO') and Path(config[key]).is_file():
                     with open(config[key],'rb') as model_file:
                         hashes[key]=hashlib.file_digest(model_file,'sha256').hexdigest()
             config['model_sha256']=hashes
@@ -302,7 +326,7 @@ def finish_attempt(aid:str,body:FinishRequest, user=Depends(current_user)):
             else: status,reason=evaluate(measured,c.definition)
             a.result_status=status; a.result_reason=reason; a.ended_at=now()
             a.evidence={'samples':samples,'events':events,'source':config['mode'],
-                        'algorithm':'prototype-v0.1','segmentation':'manual-start-stop'}
+                        'algorithm':'prototype-3modules-v0.2','segmentation':'manual-start-stop'}
             for metric in db.scalars(select(MetricDefinition)):
                 value=measured.get(metric.code)
                 if value is not None and not math.isfinite(value): value=None
@@ -310,7 +334,7 @@ def finish_attempt(aid:str,body:FinishRequest, user=Depends(current_user)):
                     validity_status='VALID' if value is not None else 'INVALID',
                     invalid_reason=None if value is not None else 'ข้อมูลไม่พอหรือยังไม่มีวิธีวัดที่รองรับ'))
         runtime.attempt_id=None; runtime.samples=[]
-    return {'id':aid,'status':status,'reason':reason,'metrics':measured}
+    return {'id':aid,'status':status,'reason':reason,'metrics':measured,'feedback':feedback(measured,c.definition.get('rules'))}
 
 
 @app.post('/api/sessions/{sid}/finish')
@@ -339,7 +363,8 @@ def detail(db,s):
             d=db.get(MetricDefinition,m.metric_id)
             measurements[d.code]={'value':m.value,'unit':d.unit,'status':m.validity_status,'reason':m.invalid_reason}
         attempts.append({'id':a.id,'number':a.attempt_number,'status':a.result_status,
-                         'reason':a.result_reason,'metrics':measurements})
+                         'reason':a.result_reason,'metrics':measurements,
+                         'feedback':feedback({k:v['value'] for k,v in measurements.items()},c.definition.get('rules'))})
     total=counts['PASS']+counts['FAIL']
     summary={code:stats([a['metrics'].get(code,{}).get('value') for a in attempts
                          if a['status']!='ABORTED']) for code in METRICS}
@@ -403,3 +428,40 @@ async def websocket(ws:WebSocket):
             await ws.send_json(private_snapshot(user))
             await asyncio.sleep(.1)
     except WebSocketDisconnect: pass
+
+
+@app.get('/api/progress')
+def progress(user=Depends(current_user)):
+    """Observed practice completion, without pretending it proves mastery."""
+    with DB() as db:
+        rows=[detail(db,s) for s in db.scalars(select(TrainingSession).where(TrainingSession.profile_id==user['profile_id']))]
+        output=[]
+        for exercise in db.scalars(select(Exercise).where(Exercise.module_id<=3).order_by(Exercise.id)):
+            sessions=[s for s in rows if s['exercise_id']==exercise.id and s['status']=='COMPLETED']
+            output.append({'exercise_id':exercise.id,'sessions':len(sessions),
+                'attempts':sum(len(s['attempts']) for s in sessions),
+                'live_pass':sum(s['counts']['PASS'] for s in sessions if s['mode']=='LIVE'),
+                'demo_sessions':sum(s['mode']=='DEMO' for s in sessions)})
+        return output
+
+
+class CalibrationRequest(BaseModel):
+    image_points: list[list[float]]
+    table_width: float=Field(gt=0,allow_inf_nan=False)
+    table_height: float=Field(gt=0,allow_inf_nan=False)
+    check_image_point: list[float]
+    check_table_point: list[float]
+
+@app.post('/api/calibration')
+def calibration(body:CalibrationRequest):
+    if len(body.image_points)!=4 or any(len(p)!=2 for p in body.image_points) or len(body.check_image_point)!=2 or len(body.check_table_point)!=2:
+        raise HTTPException(422,'ต้องมีมุมโต๊ะ 4 จุดและจุดตรวจสอบอิสระ 1 จุด')
+    try:
+        from tools.calibrate import calibrate
+        return calibrate({'image_points':body.image_points,
+            'table_points':[[0,0],[body.table_width,0],[body.table_width,body.table_height],[0,body.table_height]],
+            'check_image_points':[body.check_image_point], 'check_table_points':[body.check_table_point]})
+    except ImportError:
+        raise HTTPException(400,'ต้องติดตั้ง requirements-camera.txt ก่อนสอบเทียบ')
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(422,str(exc)) from exc
