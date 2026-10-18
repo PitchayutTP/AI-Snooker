@@ -1,5 +1,7 @@
 import threading
 import time
+import statistics
+from .metrics import distance, line_distance
 from .vision import DemoSource, LiveSource
 
 
@@ -44,8 +46,23 @@ class Runtime:
             fresh=bool(frame) and time.time()-frame.get('received_at',0)<2 and not self.error
             if not fresh:
                 frame={k:None for k in ['elbow','head','bridge','torso','stance','image']}
-            return {'frame':frame,'ready':fresh and bool(self.latest.get('ready')),
-                    'error':self.error,'mode':self.config.get('mode'),
+            live={}
+            if fresh and self.samples:
+                baseline=[s for s in self.samples if s['t']-self.samples[0]['t']<=self.config.get('baseline_seconds',1)]
+                elapsed=frame['t']-self.samples[0]['t']
+                live['baseline_ready']=elapsed>self.config.get('baseline_seconds',1) and len(baseline)>=5
+                if live['baseline_ready']:
+                    for key in ['head','bridge']:
+                        points=[s[key] for s in baseline if s.get(key) is not None]
+                        if len(points)>=5 and frame.get(key) is not None:
+                            origin=[statistics.mean(p[i] for p in points) for i in (0,1)]
+                            live[key+'_displacement']=distance(frame[key],origin)
+                    cues=[s['cue'] for s in baseline if s.get('cue')]
+                    if len(cues)>=5 and frame.get('cue'):
+                        a,b=[tuple(statistics.mean(c[k][i] for c in cues) for i in (0,1)) for k in (0,1)]
+                        live['cue_deviation']=line_distance(frame['cue'][0],a,b)
+            return {'live_metrics':live,'frame':frame,'ready':fresh and bool(self.latest.get('ready')),
+                    'error':self.error,'mode':self.config.get('mode'),'configuration':dict(self.config),
                     'session_id':self.session_id,'attempt_id':self.attempt_id,
                     'samples':len(self.samples),'collecting':self.collecting}
 

@@ -8,15 +8,11 @@ from .metrics import angle, distance, line_distance, fraction_estimate
 class DemoSource:
     def __init__(self, config): self.i=0
     def read(self):
-        self.i+=1
-        t=time.monotonic()
-        # Deliberate missing samples exercise INVALID handling; never real observations.
-        valid=self.i%23!=0
-        return {'t':t,'elbow':90+4*math.sin(self.i/10) if valid else None,
-                'head':[320+2*math.sin(self.i/9),180] if valid else None,
-                'bridge':[450+math.sin(self.i/7),340] if valid else None,
-                'torso':40.,'stance':150.,'balls':[], 'cue':None,
-                'source':'DEMO','image':None,'error':None,
+        self.i+=1; stamp=time.monotonic(); offset=2*math.sin(self.i/10)
+        # Simulated data are explicitly labelled DEMO and never used as LIVE evidence.
+        return {'t':stamp,'elbow':90+offset,'head':[320+offset,180],'bridge':[450+offset,340],
+                'torso':40.,'stance':150.,'cue':[[100+offset,100],[40+offset,100]],
+                'balls':[],'source':'DEMO','image':None,'error':None,
                 'capture_ms':0.,'processing_ms':0.,'ready':True}
     def close(self): pass
 
@@ -26,7 +22,7 @@ class LiveSource:
         import cv2
         self.cv2=cv2
         self.config=config
-        self.caps={}; self.pose=None; self.yolo=None
+        self.caps={}; self.pose=None; self.yolo=None; self.colour=None
         try:
             for name in config['required']:
                 source=config[f'{name}_source']
@@ -44,11 +40,15 @@ class LiveSource:
                         base_options=mp.tasks.BaseOptions(model_asset_path=model),
                         running_mode=mp.tasks.vision.RunningMode.VIDEO, num_poses=1))
             if 'top' in self.caps:
-                from ultralytics import YOLO
-                model=config['ball_model']
-                if not Path(model).is_file(): raise ValueError('ไม่พบโมเดลลูกที่ฝึกไว้ (.pt)')
                 if not config.get('homography'): raise ValueError('ต้องมี homography ของกล้องด้านบน')
-                self.yolo=YOLO(model)
+                if config.get('ball_detector','HSV')=='HSV':
+                    from .colour import ColourTracker
+                    self.colour=ColourTracker(config['ball_colours'],config['ball_min_area'],config['ball_max_area'],config['ball_max_jump'],config['max_frame_gap_s'])
+                else:
+                    from ultralytics import YOLO
+                    model=config['ball_model']
+                    if not Path(model).is_file(): raise ValueError('ไม่พบโมเดลลูกที่ฝึกไว้ (.pt)')
+                    self.yolo=YOLO(model)
             self.ts=0
         except Exception:
             self.close()
@@ -114,19 +114,34 @@ class LiveSource:
                 cv2.line(frame,tuple(map(int,marker_points[0])),tuple(map(int,marker_points[1])),(255,180,0),2)
         if 'top' in frames:
             frame=frames['top']
-            result=self.yolo.track(frame,persist=True,verbose=False,conf=self.config['ball_confidence'])[0]
-            boxes=result.boxes
-            H=np.asarray(self.config['homography'],dtype=float)
-            if boxes is not None:
-                for box in boxes:
-                    x1,y1,x2,y2=box.xyxy[0].cpu().tolist()
-                    p=cv2.perspectiveTransform(np.array([[[(x1+x2)/2,(y1+y2)/2]]],dtype=np.float32),H)[0,0]
-                    if not np.isfinite(p).all(): continue
-                    name=str(result.names[int(box.cls.item())])
-                    role=self.config.get('ball_roles',{}).get(name,name)
-                    sample['balls'].append({'xy':p.tolist(),'class':role,'detected_class':name,
-                        'id':int(box.id.item()) if box.id is not None else None})
-                    cv2.rectangle(frame,(int(x1),int(y1)),(int(x2),int(y2)),(0,220,100),2)
+            if self.colour:
+                # Mask outside table quadrilateral, computed from the inverse calibration.
+                width,height=self.config['table_size']
+                corners=np.array([[[0,0],[width,0],[width,height],[0,height]]],dtype=np.float32)
+                inv=np.linalg.inv(np.asarray(self.config['homography'],dtype=float))
+                imagecorners=cv2.perspectiveTransform(corners,inv)[0]
+                mask=np.zeros(frame.shape[:2],dtype=np.uint8)
+                cv2.fillConvexPoly(mask,np.round(imagecorners).astype(np.int32),255)
+                cropped=cv2.bitwise_and(frame,frame,mask=mask)
+                sample['balls']=self.colour.detect(cropped,start,self.config['homography'])
+                for ball in sample['balls']:
+                    x,y=map(int,ball['image_xy'])
+                    cv2.circle(frame,(x,y),10,(0,200,200),2)
+                    cv2.putText(frame,ball['class'],(x+12,y),cv2.FONT_HERSHEY_SIMPLEX,.4,(0,200,200),1)
+            else:
+                result=self.yolo.track(frame,persist=True,verbose=False,conf=self.config['ball_confidence'])[0]
+                boxes=result.boxes
+                H=np.asarray(self.config['homography'],dtype=float)
+                if boxes is not None:
+                    for box in boxes:
+                        x1,y1,x2,y2=box.xyxy[0].cpu().tolist()
+                        p=cv2.perspectiveTransform(np.array([[[(x1+x2)/2,(y1+y2)/2]]],dtype=np.float32),H)[0,0]
+                        if not np.isfinite(p).all(): continue
+                        name=str(result.names[int(box.cls.item())])
+                        role=self.config.get('ball_roles',{}).get(name,name)
+                        sample['balls'].append({'xy':p.tolist(),'class':role,'detected_class':name,
+                            'id':int(box.id.item()) if box.id is not None else None})
+                        cv2.rectangle(frame,(int(x1),int(y1)),(int(x2),int(y2)),(0,220,100),2)
         # Selected preview; raw videos are not written automatically.
         frame=frames.get('side',frames.get('top'))
         preview=cv2.resize(frame,(640,int(frame.shape[0]*640/frame.shape[1])))
@@ -136,6 +151,8 @@ class LiveSource:
             sample['image']=base64.b64encode(jpeg).decode('ascii')
         if 'side' in frames:
             sample['ready']=sample['elbow'] is not None and sample['head'] is not None and sample['bridge'] is not None
+            if self.config['exercise_id']==1: sample['ready']=sample['ready'] and sample['torso'] is not None and sample['stance'] is not None
+            if self.config['exercise_id']==2: sample['ready']=sample['ready'] and sample.get('cue') is not None
         if 'top' in frames:
             sample['ready']=sample['ready'] and all(
                 len([b for b in sample['balls'] if b['class']==name and b['id'] is not None])==1

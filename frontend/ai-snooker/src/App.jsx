@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, number, date, names } from "./lib/api";
+import { Guide, CriteriaEditor, Feedback, LiveValues, Progress, SettingsImport, Calibration, Trajectory, labels } from "./components/Prototype";
 
 function Button({ children, secondary = false, ...props }) {
   return (
@@ -176,6 +177,9 @@ function Workspace({ user, onLogout }) {
     [lastAttempt, setLastAttempt] = useState(null);
   const [pair, setPair] = useState(["", ""]),
     [comparison, setComparison] = useState(null);
+  const [progress,setProgress]=useState([]);
+  const [historyFilter,setHistoryFilter]=useState({exercise:'',from:'',to:'',mode:''});
+  const visibleHistory=history.filter(s=> (!historyFilter.exercise || String(s.exercise_id)===historyFilter.exercise) && (!historyFilter.mode || s.mode===historyFilter.mode) && (!historyFilter.from || new Date(s.started_at)>=new Date(historyFilter.from+'T00:00:00')) && (!historyFilter.to || new Date(s.started_at)<=new Date(historyFilter.to+'T23:59:59.999')));
   const sessionRequest = useRef(null),
     attemptRequest = useRef(null);
   const exercise = catalog.find((e) => String(e.id) === exerciseId);
@@ -219,10 +223,11 @@ function Workspace({ user, onLogout }) {
       live = false;
     };
   }, []);
+  useEffect(()=>{let mounted=true;api('/progress').then(value=>{if(mounted)setProgress(value)}).catch(()=>{});return ()=>{mounted=false}},[]);
   useEffect(() => {
     let disposed = false,
       socket,
-      timer;
+      timer, watchdog;
     function connect() {
       socket = new WebSocket(
         `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws`,
@@ -231,7 +236,11 @@ function Workspace({ user, onLogout }) {
         if (!disposed) setConnected(true);
       };
       socket.onmessage = (e) => {
-        if (!disposed) setStatus(JSON.parse(e.data));
+        if (!disposed) {
+          setStatus(JSON.parse(e.data));
+          clearTimeout(watchdog);
+          watchdog=setTimeout(()=>{setConnected(false);setStatus(old=>({...old,ready:false,frame:{},live_metrics:{}}));socket.close()},4000);
+        }
       };
       socket.onclose = () => {
         if (!disposed) {
@@ -244,6 +253,7 @@ function Workspace({ user, onLogout }) {
     return () => {
       disposed = true;
       clearTimeout(timer);
+      clearTimeout(watchdog);
       socket?.close();
     };
   }, []);
@@ -252,6 +262,7 @@ function Workspace({ user, onLogout }) {
     setCriteriaId(String(item.criteria[0]?.id || ""));
     setPrepared("");
     setPage("setup");
+    setLastAttempt(null);
   }
   async function navigate(target) {
     if (target === "history" || target === "compare")
@@ -259,7 +270,10 @@ function Workspace({ user, onLogout }) {
         setHistory(await api("/sessions"));
         setPage(target);
       });
-    else setPage(target);
+    else {
+      if(target==='dashboard') await run(async()=>setProgress(await api('/progress')));
+      setPage(target);
+    }
   }
   async function checkReady() {
     setPrepared("");
@@ -363,6 +377,7 @@ function Workspace({ user, onLogout }) {
                 โหลดแบบฝึกอีกครั้ง
               </Button>
             )}
+            <Progress data={progress} catalog={catalog} onChoose={choose} disabled={busy || active}/>
             <div className="modules">
               {[...new Set(catalog.map((e) => e.module_id))].map(
                 (id, index) => {
@@ -507,10 +522,11 @@ function Workspace({ user, onLogout }) {
                     />
                   </Field>
                 ))}
+                <SettingsImport disabled={active} onImport={setAdvanced}/>
                 <details>
                   <summary>การตั้งค่าการวัดเพิ่มเติม (JSON)</summary>
                   <p className="muted">
-                    LIVE ต้องมีโมเดลและการสอบเทียบตามไฟล์ใน configs
+                    LIVE ด้านข้างต้องมีโมเดลท่าทาง ด้านบนเลือก HSV (ลูกขาว/แดง) หรือ YOLO และต้องสอบเทียบโต๊ะ
                   </p>
                   <textarea
                     aria-label="การตั้งค่าเพิ่มเติม"
@@ -556,6 +572,8 @@ function Workspace({ user, onLogout }) {
                 </p>
               </section>
             </div>
+            <Guide exercise={exercise}/>
+            <Calibration disabled={active} onApply={values=>{try{const current=JSON.parse(advanced);if(!current || Array.isArray(current) || typeof current!=='object')throw new Error('การตั้งค่าเพิ่มเติมต้องเป็น JSON object');setAdvanced(JSON.stringify({...current,...values},null,2));setPrepared('')}catch(e){setError(e.message)}}}/>
           </>
         )}
         {page === "criteria" && (
@@ -578,7 +596,7 @@ function Workspace({ user, onLogout }) {
               >
                 {Object.entries(criteria?.rules || {}).map(([key, rule]) => (
                   <tr key={key}>
-                    <td>{key}</td>
+                    <td>{labels[key] || key}</td>
                     <td>{number(rule.min)}</td>
                     <td>{number(rule.max)}</td>
                     <td>{units[key]}</td>
@@ -592,6 +610,7 @@ function Workspace({ user, onLogout }) {
                 กลับไปตั้งค่าก่อนฝึก
               </Button>
             </section>
+            <CriteriaEditor key={exercise?.id} exercise={exercise} units={units} disabled={active} onSaved={async id=>{await load();setCriteriaId(String(id))}}/>
           </>
         )}
         {page === "training" && (
@@ -627,6 +646,7 @@ function Workspace({ user, onLogout }) {
                   <section className="panel">
                     <Badge value={status.mode || config.mode} />
                     <h2>ข้อมูลขณะฝึก</h2>
+                    <LiveValues status={status}/>
                     <dl>
                       <dt>มุมศอก (°)</dt>
                       <dd>{number(frame.elbow)}</dd>
@@ -677,17 +697,19 @@ function Workspace({ user, onLogout }) {
                     )}
                   </section>
                 </div>
+                <Trajectory status={status}/>
                 {lastAttempt && (
                   <section className="panel">
                     <h2>
                       ผลครั้งล่าสุด <Badge value={lastAttempt.status} />
                     </h2>
                     <p>{lastAttempt.reason}</p>
+                    <Feedback items={lastAttempt.feedback}/>
                     <Table headings={["ตัวชี้วัด", "ค่า", "หน่วย"]}>
                       {Object.entries(lastAttempt.metrics || {}).map(
                         ([key, value]) => (
                           <tr key={key}>
-                            <td>{key}</td>
+                            <td>{labels[key] || key}</td>
                             <td>{number(value)}</td>
                             <td>{units[key]}</td>
                           </tr>
@@ -741,6 +763,7 @@ function Workspace({ user, onLogout }) {
                       {a.reason || "—"}
                       <details>
                         <summary>ค่าที่วัดได้</summary>
+                        <Feedback items={a.feedback}/>
                         {Object.entries(a.metrics).map(([key, m]) => (
                           <p key={key}>
                             {key}: {number(m.value)} {m.unit}{" "}
@@ -778,6 +801,12 @@ function Workspace({ user, onLogout }) {
             </div>
             {page === "history" ? (
               <section className="panel">
+                <div className="filters">
+                  <label>แบบฝึก<select value={historyFilter.exercise} onChange={e=>setHistoryFilter({...historyFilter,exercise:e.target.value})}><option value="">ทั้งหมด</option>{catalog.map(ex=><option key={ex.id} value={ex.id}>{ex.name}</option>)}</select></label>
+                  <label>ตั้งแต่<input type="date" value={historyFilter.from} onChange={e=>setHistoryFilter({...historyFilter,from:e.target.value})}/></label>
+                  <label>ถึง<input type="date" min={historyFilter.from} value={historyFilter.to} onChange={e=>setHistoryFilter({...historyFilter,to:e.target.value})}/></label>
+                  <label>โหมด<select value={historyFilter.mode} onChange={e=>setHistoryFilter({...historyFilter,mode:e.target.value})}><option value="">ทั้งหมด</option><option>DEMO</option><option>LIVE</option></select></label>
+                </div>
                 <Table
                   headings={[
                     "วันและเวลา",
@@ -787,7 +816,7 @@ function Workspace({ user, onLogout }) {
                     "รายละเอียด",
                   ]}
                 >
-                  {history.map((s) => (
+                  {visibleHistory.map((s) => (
                     <tr key={s.id}>
                       <td>{date(s.started_at)}</td>
                       <td>{s.name}</td>
@@ -812,7 +841,7 @@ function Workspace({ user, onLogout }) {
                     </tr>
                   ))}
                 </Table>
-                {!history.length && (
+                {!visibleHistory.length && (
                   <p className="empty">
                     ยังไม่มีประวัติ เริ่มฝึกเพื่อบันทึกผลครั้งแรก
                   </p>
@@ -872,7 +901,9 @@ function Workspace({ user, onLogout }) {
                       headings={[
                         "ตัวชี้วัด",
                         "ค่าเฉลี่ย A",
+                      "จำนวน A",
                         "ค่าเฉลี่ย B",
+                      "จำนวน B",
                         "ผลต่าง B − A",
                         "หน่วย",
                       ]}
@@ -880,9 +911,9 @@ function Workspace({ user, onLogout }) {
                       {Object.entries(comparison.metrics).map(
                         ([key, value]) => (
                           <tr key={key}>
-                            <td>{key}</td>
-                            <td>{number(value.left.mean)}</td>
-                            <td>{number(value.right.mean)}</td>
+                            <td>{labels[key] || key}</td>
+                            <td>{number(value.left.mean)}</td><td>{value.left.n}</td>
+                            <td>{number(value.right.mean)}</td><td>{value.right.n}</td>
                             <td>{number(value.difference)}</td>
                             <td>{units[key]}</td>
                           </tr>
