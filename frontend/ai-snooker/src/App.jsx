@@ -568,8 +568,15 @@ function Workspace({ user, onLogout }) {
                 <p className="muted">
                   {prepared === fingerprint && connected && status.ready
                     ? "พร้อมเริ่มรอบฝึก"
-                    : "ต้องตรวจความพร้อมหลังเปลี่ยนการตั้งค่า"}
+                    : !connected ? "ยังไม่เชื่อมต่อข้อมูลสดกับ Backend"
+                    : prepared !== fingerprint ? "ต้องตรวจความพร้อมหลังเปลี่ยนการตั้งค่า"
+                    : "กล้องเปิดแล้ว กำลังรอข้อมูลตรวจจับครบก่อนเริ่ม"}
                 </p>
+                {prepared === fingerprint && connected && !active && <div aria-live="polite">
+                  {frame.image && <img src={`data:image/jpeg;base64,${frame.image}`} alt="ภาพตรวจความพร้อมก่อนเริ่มฝึก" style={{width:'100%',borderRadius:8}}/>}
+                  {!status.ready && <ul className="notice">{(status.readiness_issues?.length ? status.readiness_issues : ['กำลังรอภาพและผลตรวจจับจากกล้อง']).map(issue=><li key={issue}>{issue}</li>)}</ul>}
+                  {config.mode==='LIVE' && exercise?.module_id===1 && <p className="muted">ถอยกล้องให้เห็นถึงข้อเท้าทั้งสองข้าง พร้อมศีรษะ ไหล่ ศอก ข้อมือ และสะโพก กล้องที่เห็นเฉพาะใบหน้าจะยังเริ่มโมดูลนี้ไม่ได้</p>}
+                </div>}
               </section>
             </div>
             <Guide exercise={exercise}/>

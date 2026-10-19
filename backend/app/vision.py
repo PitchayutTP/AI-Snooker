@@ -32,12 +32,14 @@ class LiveSource:
                 if not cap.isOpened(): raise ValueError(f'เปิดกล้อง/วิดีโอ {name} ไม่ได้')
             if 'side' in self.caps:
                 import mediapipe as mp
-                model=config['pose_model']
-                if not Path(model).is_file(): raise ValueError('ไม่พบไฟล์โมเดล Pose Landmarker .task')
+                model=Path(config['pose_model'])
+                if not model.is_absolute():
+                    model=Path(__file__).resolve().parents[1]/model
+                if not model.is_file(): raise ValueError('ไม่พบโมเดล Pose: รัน setup-camera.ps1 ที่โฟลเดอร์โปรเจกต์ก่อน')
                 self.mp=mp
                 self.pose=mp.tasks.vision.PoseLandmarker.create_from_options(
                     mp.tasks.vision.PoseLandmarkerOptions(
-                        base_options=mp.tasks.BaseOptions(model_asset_path=model),
+                        base_options=mp.tasks.BaseOptions(model_asset_buffer=model.read_bytes()),
                         running_mode=mp.tasks.vision.RunningMode.VIDEO, num_poses=1))
             if 'top' in self.caps:
                 if not config.get('homography'): raise ValueError('ต้องมี homography ของกล้องด้านบน')
@@ -157,6 +159,19 @@ class LiveSource:
             sample['ready']=sample['ready'] and all(
                 len([b for b in sample['balls'] if b['class']==name and b['id'] is not None])==1
                 for name in ['cue_ball','target_ball'])
+        issues=[]
+        if 'side' in frames:
+            required=[('elbow','ไหล่ ศอก และข้อมือด้านถือคิว'),('head','ศีรษะ'),('bridge','ข้อมือด้านสะพานมือ')]
+            if self.config['exercise_id']==1:
+                required += [('torso','ไหล่และสะโพก'),('stance','ข้อเท้าทั้งสองข้าง')]
+            if self.config['exercise_id']==2:
+                required += [('cue','มาร์กเกอร์สีสองจุดบนคิว')]
+            issues += [f'ยังตรวจไม่พบ{label}ชัดเจน' for key,label in required if sample.get(key) is None]
+        if 'top' in frames:
+            for role,label in [('cue_ball','ลูกขาว'),('target_ball','ลูกเป้า')]:
+                if len([b for b in sample['balls'] if b['class']==role and b['id'] is not None])!=1:
+                    issues.append(f'ต้องตรวจพบ{label}พร้อมรหัสติดตามอย่างละหนึ่งลูก')
+        sample['readiness_issues']=issues
         sample['processing_ms']=(time.monotonic()-start)*1000
         return sample
 

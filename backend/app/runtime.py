@@ -44,7 +44,9 @@ class Runtime:
         with self.lock:
             frame=dict(self.latest or {})
             fresh=bool(frame) and time.time()-frame.get('received_at',0)<2 and not self.error
+            issues=list(frame.get('readiness_issues',[]))
             if not fresh:
+                issues=[self.error or ('ภาพจากกล้องไม่อัปเดต กรุณาตรวจความพร้อมอีกครั้ง' if frame else 'กำลังรอภาพจากกล้อง')]
                 frame={k:None for k in ['elbow','head','bridge','torso','stance','image']}
             live={}
             if fresh and self.samples:
@@ -62,6 +64,7 @@ class Runtime:
                         a,b=[tuple(statistics.mean(c[k][i] for c in cues) for i in (0,1)) for k in (0,1)]
                         live['cue_deviation']=line_distance(frame['cue'][0],a,b)
             return {'live_metrics':live,'frame':frame,'ready':fresh and bool(self.latest.get('ready')),
+                    'readiness_issues':issues,
                     'error':self.error,'mode':self.config.get('mode'),'configuration':dict(self.config),
                     'session_id':self.session_id,'attempt_id':self.attempt_id,
                     'samples':len(self.samples),'collecting':self.collecting}
