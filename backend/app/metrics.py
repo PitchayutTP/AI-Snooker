@@ -28,6 +28,22 @@ def stats(values):
             'sd': statistics.stdev(values) if len(values) >= 2 else None}
 
 
+def data_quality(samples,baseline_seconds):
+    duration=max(0,samples[-1]['t']-samples[0]['t']) if len(samples)>1 else 0
+    baseline=[s for s in samples if s['t']-samples[0]['t']<=baseline_seconds] if samples else []
+    active=[s for s in samples if s['t']-samples[0]['t']>baseline_seconds] if samples else []
+    keys=['elbow','torso','stance','head','bridge','cue']
+    return {'samples':len(samples),'duration_s':duration,
+            'effective_capture_fps':(len(samples)-1)/duration if duration else None,
+            'baseline_samples':len(baseline),'active_samples':len(active),
+            'active_valid_counts':{key:sum(s.get(key) is not None for s in active) for key in keys},
+            'baseline_valid_counts':{key:sum(s.get(key) is not None for s in baseline) for key in keys},
+            'not_ready_frames':sum(not s.get('ready',False) for s in samples),
+            'recorded_frames':sum(bool(s.get('recorded_images')) for s in samples),
+            'recording_ms':stats([s.get('recording_ms') for s in samples]),
+            'processing_ms':stats([s.get('processing_ms') for s in samples])}
+
+
 def fraction_estimate(previous_cue, cue, target, radius):
     """Projected overlap fraction, not a measurement of actual surface contact.
 

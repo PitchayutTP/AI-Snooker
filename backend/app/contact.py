@@ -48,6 +48,8 @@ def contact_metrics(samples, config, setup):
         closest=math.hypot(*(relative[i]+u*delta[i] for i in (0,1)))
         if closest>2*radius+tolerance:
             continue
+        if any(distance(row[2],trace[0][2])>motion for row in trace[:index]):
+            return result,[{'type':'INVALID','reason':'target moved before contact; reset stationary target'}]
         # Require target departure around the candidate, not mere proximity.
         after=[row for row in trace[index:] if row[0]-t1<=.5]
         if not any(distance(o0,row[2])>=motion for row in after):

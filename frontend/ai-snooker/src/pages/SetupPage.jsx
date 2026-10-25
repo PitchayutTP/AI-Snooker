@@ -1,3 +1,4 @@
+import { ModelSettings } from "../components/ModelSettings";
 import { TrialLayout } from "../components/TrialLayout";
 import { CameraSetup } from "../components/CameraSetup";
 import { Button, Field } from "../components/ui";
@@ -47,6 +48,12 @@ export default function SetupPage({ user, status, exerciseId, active, choose, ca
                 <Button secondary onClick={() => setPage("criteria")}>
                   ดูเกณฑ์ประเมิน
                 </Button>
+                <Field label="ประเภทของรอบ">
+                  <select disabled={active} value={config.purpose || 'PILOT'} onChange={e=>setConfig({...config,purpose:e.target.value})}>
+                    <option value="PILOT">นำร่อง — เก็บค่าการวัด</option><option value="ASSESSMENT">ประเมิน — ต้องมีเกณฑ์และแผน N</option>
+                  </select>
+                </Field>
+                {config.purpose==='ASSESSMENT' && <p className="notice">ใช้ LIVE และเกณฑ์ยืนยันที่กำหนด N กับอัตราผ่านแล้ว หากยังไม่มีให้สร้างเกณฑ์รุ่นใหม่</p>}
                 <Field label="โหมดการฝึก">
                   <select
                     disabled={active}
@@ -58,6 +65,9 @@ export default function SetupPage({ user, status, exerciseId, active, choose, ca
                     <option value="DEMO">DEMO — ทดสอบการทำงาน</option>
                     <option value="LIVE">LIVE — กล้องจริง</option>
                   </select>
+                </Field>
+                <Field label="ช่วงเก็บท่าตั้งต้น (วินาที)">
+                  <input type="number" min="0.5" max="10" step="0.5" disabled={active} value={config.baseline_seconds ?? 1} onChange={e=>setConfig({...config,baseline_seconds:Number(e.target.value)})}/>
                 </Field>
                 <Field label="มือที่ถนัด">
                   <select
@@ -147,6 +157,7 @@ export default function SetupPage({ user, status, exerciseId, active, choose, ca
             </div>
             <Guide exercise={exercise}/>
             <TrialLayout exercise={exercise} advanced={advanced}/>
+            <ModelSettings advanced={advanced} onChange={value=>{setAdvanced(value);setPrepared('')}} disabled={active || busy}/>
             <CameraSetup config={config} setConfig={setConfig} advanced={advanced} onAdvanced={setAdvanced} status={status} disabled={active || busy || !connected} onReset={()=>setPrepared('')} accountKey={`snooker-settings-${user.username}`}/>
             <Calibration previewImage={frame.preview_camera==='top' ? frame.image : null} disabled={active} onApply={values=>{try{const current=JSON.parse(advanced);if(!current || Array.isArray(current) || typeof current!=='object')throw new Error('การตั้งค่าเพิ่มเติมต้องเป็น JSON object');setAdvanced(JSON.stringify({...current,...values},null,2));setPrepared('')}catch(e){setError(e.message)}}}/>
           </>);

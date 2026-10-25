@@ -13,6 +13,7 @@ export function Progress({ data, catalog, onChoose, disabled }) {
               <th>รอบที่จบ</th>
               <th>ครั้งทั้งหมด</th>
               <th>LIVE ผ่าน</th>
+              <th>รอบประเมินผ่าน/ทั้งหมด</th>
               <th>ฝึกต่อ</th>
             </tr>
           </thead>
@@ -25,6 +26,7 @@ export function Progress({ data, catalog, onChoose, disabled }) {
                   <td>{item?.sessions || 0}</td>
                   <td>{item?.attempts || 0}</td>
                   <td>{item?.live_pass || 0}</td>
+                  <td>{item?.assessments_passed || 0}/{item?.assessments_completed || 0}</td>
                   <td>
                     <button
                       className="button secondary"

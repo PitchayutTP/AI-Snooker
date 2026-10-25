@@ -40,4 +40,7 @@ export const names = {
   ABORTED: "ยกเลิก",
   COMPLETED: "เสร็จสิ้น",
   IN_PROGRESS: "กำลังฝึก",
+  PILOT: "นำร่อง",
+  INCOMPLETE: "ยังไม่ครบแผน",
+  READY_TO_FINISH: "ครบจำนวน พร้อมจบรอบ",
 };

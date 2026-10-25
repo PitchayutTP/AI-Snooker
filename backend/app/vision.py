@@ -53,6 +53,11 @@ class LiveSource:
                     if not model.is_absolute(): model=Path(__file__).resolve().parents[1]/model
                     if not model.is_file(): raise ValueError('ไม่พบโมเดลลูกที่ฝึกไว้ (.pt)')
                     self.yolo=YOLO(str(model))
+                    names=self.yolo.names
+                    mapped={config.get('ball_roles',{}).get(str(name),str(name)) for name in (names.values() if isinstance(names,dict) else names)}
+                    required_roles={'cue_ball','target_ball'} if config['exercise_id']>=3 else {'cue_ball'}
+                    if not required_roles.issubset(mapped):
+                        raise ValueError('คลาสโมเดลไม่ตรงแบบฝึก ต้องมี cue_ball/target_ball หรือกำหนด ball_roles ให้ตรง ห้ามใช้โมเดลทั่วไปที่ยังไม่ฝึกลูกสนุกเกอร์')
             self.ts=0
         except Exception:
             self.close()
@@ -79,6 +84,8 @@ class LiveSource:
             if expected and list(expected)!=[frame.shape[1],frame.shape[0]]:
                 raise ValueError(f'ความละเอียดกล้อง {name} เปลี่ยน ต้องสอบเทียบ/เลือกจุดใหม่')
         sample['capture_ms']=(time.monotonic()-start)*1000
+        if self.config.get('record_frames'):
+            sample['_raw_frames']={name:frame.copy() for name,frame in frames.items()}
         sample['frame_receive_times']=times
         if len(times)==2 and abs(times['side']-times['top'])*1000>self.config['sync_tolerance_ms']:
             sample.update(ready=False,error='เวลารับเฟรมต่างกันเกินเกณฑ์')
@@ -92,6 +99,7 @@ class LiveSource:
                 points=res.pose_landmarks[0]; threshold=self.config['visibility']
                 def point(i):
                     p=points[i]
+                    if not all(math.isfinite(x) for x in (p.x,p.y,p.visibility or 0,p.presence or 0)): return None
                     if min(p.visibility or 0,p.presence or 0)<threshold: return None
                     return [p.x*w,p.y*h]
                 right=self.config['hand']=='RIGHT'
@@ -139,20 +147,27 @@ class LiveSource:
                     cv2.circle(frame,(x,y),10,(0,200,200),2)
                     cv2.putText(frame,ball['class'],(x+12,y),cv2.FONT_HERSHEY_SIMPLEX,.4,(0,200,200),1)
             else:
-                result=self.yolo.track(frame,persist=True,verbose=False,conf=self.config['ball_confidence'])[0]
+                result=self.yolo.track(frame,persist=True,verbose=False,conf=self.config['ball_confidence'],
+                                       tracker=self.config.get('ball_tracker','bytetrack.yaml'),device=self.config.get('ball_device','cpu'))[0]
                 boxes=result.boxes
                 H=np.asarray(self.config['homography'],dtype=float)
                 if boxes is not None:
                     for box in boxes:
                         x1,y1,x2,y2=box.xyxy[0].cpu().tolist()
+                        confidence=float(box.conf.item())
+                        if not all(math.isfinite(x) for x in (x1,y1,x2,y2,confidence)) or x2<=x1 or y2<=y1: continue
                         p=cv2.perspectiveTransform(np.array([[[(x1+x2)/2,(y1+y2)/2]]],dtype=np.float32),H)[0,0]
                         if not np.isfinite(p).all(): continue
                         name=str(result.names[int(box.cls.item())])
                         role=self.config.get('ball_roles',{}).get(name,name)
                         sample['balls'].append({'xy':p.tolist(),'class':role,'detected_class':name,
+                            'box_xyxy':[x1,y1,x2,y2],'confidence':confidence,
                             'id':int(box.id.item()) if box.id is not None else None})
                         cv2.rectangle(frame,(int(x1),int(y1)),(int(x2),int(y2)),(0,220,100),2)
-        # Selected preview; raw videos are not written automatically.
+        if 'top' in frames:
+            width,height=self.config['table_size']
+            sample['balls']=[ball for ball in sample['balls'] if 0<=ball['xy'][0]<=width and 0<=ball['xy'][1]<=height]
+        # Selected preview; raw reference frames are opt-in.
         frame=frames.get('side',frames.get('top'))
         preview=cv2.resize(frame,(640,int(frame.shape[0]*640/frame.shape[1])))
         ok,jpeg=cv2.imencode('.jpg',preview,[cv2.IMWRITE_JPEG_QUALITY,65])
@@ -260,11 +275,13 @@ def cue_metrics(samples, baseline_seconds, config=None):
     result={'cue_deviation_mean':None,'cue_deviation_max':None,
             'follow_through':None,'center_aim_error':None}
     if not samples: return result
+    config=config or {}
+    minimum=config.get('min_valid_frames',5);ratio=config.get('min_valid_ratio',.7)
     import statistics
     base=[s['cue'] for s in samples if s.get('cue') and s['t']-samples[0]['t']<=baseline_seconds]
     active=[s for s in samples if s['t']-samples[0]['t']>baseline_seconds]
     valid=[s['cue'] for s in active if s.get('cue')]
-    if len(base)<5 or len(valid)<5 or len(valid)/max(1,len(active))<.7: return result
+    if len(base)<minimum or len(valid)<minimum or len(valid)/max(1,len(active))<ratio: return result
     a,b=[tuple(statistics.mean(c[k][i] for c in base) for i in (0,1)) for k in (0,1)]
     deviations=[line_distance(c[0],a,b) for c in valid]
     deviations=[d for d in deviations if d is not None]

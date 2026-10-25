@@ -1,3 +1,4 @@
-mediapipe>=0.10.30,<0.11
+-r requirements-camera.txt
 opencv-python>=4.11,<5
 ultralytics>=8.3,<9
+lap>=0.5.12,<1

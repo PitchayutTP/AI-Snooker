@@ -14,6 +14,7 @@ export function LiveValues({ status }) {
   return (
     <>
       <h3>ตัวชี้วัดขณะฝึก</h3>
+      {frame.smoothing_window>1 && <p className="muted">Moving Average {frame.smoothing_window} เฟรม · ความล่าช้าจากการกรองโดยประมาณ {number(frame.estimated_smoothing_delay_ms)} ms</p>}
       {module <= 2 ? (
         <dl>
           {readings.map(([label, value, unit]) => (

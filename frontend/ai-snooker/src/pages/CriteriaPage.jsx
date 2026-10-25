@@ -12,6 +12,7 @@ export default function CriteriaPage({ exercise, criteria, units, setPage, activ
             </div>
             <section className="panel">
               <p>{criteria?.source || "ยังไม่ระบุแหล่งที่มา"}</p>
+              {criteria?.protocol && <p className="notice">แผน: ผล PASS/FAIL {criteria.protocol.required_valid_attempts} ครั้ง · ผ่านขั้นต่ำ {criteria.protocol.minimum_pass_rate*100}% · {criteria.protocol.rationale}</p>}
               <Badge
                 value={
                   criteria?.approved ? "ยืนยันเกณฑ์แล้ว" : "ยังไม่ยืนยันเกณฑ์"

@@ -34,6 +34,7 @@ export default function Workspace({ user, onLogout }) {
   const [pair, setPair] = useState(["", ""]),
     [comparison, setComparison] = useState(null);
   const [progress,setProgress]=useState([]);
+  const [activeReport,setActiveReport]=useState(null);
   const [historyFilter,setHistoryFilter]=useState({exercise:'',from:'',to:'',mode:''});
   const visibleHistory=history.filter(s=> (!historyFilter.exercise || String(s.exercise_id)===historyFilter.exercise) && (!historyFilter.mode || s.mode===historyFilter.mode) && (!historyFilter.from || new Date(s.started_at)>=new Date(historyFilter.from+'T00:00:00')) && (!historyFilter.to || new Date(s.started_at)<=new Date(historyFilter.to+'T23:59:59.999')));
   const sessionRequest = useRef(null),
@@ -43,6 +44,12 @@ export default function Workspace({ user, onLogout }) {
   const fingerprint = JSON.stringify([exerciseId, config, advanced]);
   const active = Boolean(status.session_id);
   const displayTiming = useDisplayTiming(status.attempt_id);
+  useEffect(()=>{
+    let disposed=false;
+    if(!status.session_id)return;
+    api(`/sessions/${status.session_id}`).then(value=>{if(!disposed)setActiveReport(value)}).catch(e=>{if(!disposed)setError(e.message)});
+    return ()=>{disposed=true};
+  },[status.session_id,status.attempt_id,lastAttempt]);
   async function run(task) {
     setBusy(true);
     setError("");
@@ -148,6 +155,7 @@ export default function Workspace({ user, onLogout }) {
     const result = await api("/sessions", {
       request_id: sessionRequest.current,
       criteria_id: Number(criteriaId),
+      purpose: config.purpose || "PILOT",
     });
     sessionRequest.current = null;
     setStatus((s) => ({ ...s, session_id: result.id }));
@@ -171,9 +179,9 @@ export default function Workspace({ user, onLogout }) {
     setLastAttempt(result);
     setStatus((s) => ({ ...s, attempt_id: null }));
   }
-  async function finishSession() {
+  async function finishSession(aborted=false) {
     const result = await api(`/sessions/${status.session_id}/finish`, {
-      aborted: false,
+      aborted,
     });
     setReport(result);
     setStatus((s) => ({ ...s, session_id: null, attempt_id: null }));
@@ -181,7 +189,7 @@ export default function Workspace({ user, onLogout }) {
     setPrepared("");
   }
   const frame = status.frame || {};
-  const view = { history, onDisplayed: displayTiming.record, status, exercise, criteria, units, setPage, active, load, setCriteriaId, loaded, busy, run, progress, catalog, choose, page, historyFilter, setHistoryFilter, visibleHistory, setReport, pair, setPair, setComparison, comparison, user, onLogout, exerciseId, criteriaId, config, setConfig, setAdvanced, advanced, connected, checkReady, prepared, fingerprint, startSession, frame, setPrepared, setError, report, navigate, finishAttempt, startAttempt, finishSession, lastAttempt };
+  const view = { activeReport: activeReport?.id===status.session_id ? activeReport : null, history, onDisplayed: displayTiming.record, status, exercise, criteria, units, setPage, active, load, setCriteriaId, loaded, busy, run, progress, catalog, choose, page, historyFilter, setHistoryFilter, visibleHistory, setReport, pair, setPair, setComparison, comparison, user, onLogout, exerciseId, criteriaId, config, setConfig, setAdvanced, advanced, connected, checkReady, prepared, fingerprint, startSession, frame, setPrepared, setError, report, navigate, finishAttempt, startAttempt, finishSession, lastAttempt };
   return (
     <>
       <header>

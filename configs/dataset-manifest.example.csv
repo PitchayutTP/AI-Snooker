@@ -1,0 +1,4 @@
+image,label,group,split
+session-a/images/frame001.jpg,session-a/labels/frame001.txt,session-a,train
+session-b/images/frame001.jpg,session-b/labels/frame001.txt,session-b,val
+session-c/images/frame001.jpg,session-c/labels/frame001.txt,session-c,test

@@ -11,15 +11,17 @@ from uuid import uuid4, UUID
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select, func
 from .database import (DB, init_db, now, Module, Exercise, Criteria, TrainingSession,
                        Attempt, Measurement, MetricDefinition, METRICS)
 from .auth import router as auth_router, identity, COOKIE, ORIGINS
 from .runtime import runtime
-from .metrics import summarize, evaluate, stats
+from .metrics import summarize, evaluate, stats, data_quality
 from .vision import ball_metrics, cue_metrics
 from .lessons import LESSONS, feedback
+from .protocol import protocol_result, assessment_problem
 
 
 @asynccontextmanager
@@ -102,6 +104,8 @@ class CaptureConfig(BaseModel):
     pose_model: str='models/pose_landmarker.task'
     ball_model: str='models/snooker.pt'
     ball_detector: Literal['HSV','YOLO']='HSV'
+    ball_tracker: Literal['bytetrack.yaml','botsort.yaml']='bytetrack.yaml'
+    ball_device: str=Field(default='cpu',min_length=1,max_length=32)
     ball_colours: dict[str,list[dict]]=Field(default_factory=lambda: {
         'cue_ball':[{'lower':[0,0,160],'upper':[179,75,255]}],
         'target_ball':[{'lower':[0,110,70],'upper':[10,255,255]},{'lower':[170,110,70],'upper':[179,255,255]}]})
@@ -110,6 +114,11 @@ class CaptureConfig(BaseModel):
     ball_max_jump: float=Field(default=120,gt=0,allow_inf_nan=False)
     visibility: float=Field(default=.7,ge=0,le=1,allow_inf_nan=False)
     baseline_seconds: float=Field(default=1.,ge=.5,le=10,allow_inf_nan=False)
+    smoothing_window: int=Field(default=1,ge=1,le=31)
+    smoothing_for_evaluation: bool=False
+    record_frames: bool=False
+    min_valid_frames: int=Field(default=5,ge=2,le=1000)
+    min_valid_ratio: float=Field(default=.7,gt=0,le=1,allow_inf_nan=False)
     sync_tolerance_ms: float=Field(default=100,gt=0,le=1000,allow_inf_nan=False)
     ball_confidence: float=Field(default=.5,gt=0,le=1,allow_inf_nan=False)
     ball_roles: dict[str,Literal['cue_ball','target_ball','obstacle_ball']]=Field(default_factory=dict)
@@ -169,6 +178,7 @@ class ReadyRequest(BaseModel):
 class StartRequest(BaseModel):
     request_id: UUID
     criteria_id: int
+    purpose: Literal['PILOT','ASSESSMENT']='PILOT'
 
 
 class AttemptRequest(BaseModel): request_id: UUID
@@ -194,10 +204,17 @@ class Rule(BaseModel):
         return self
 
 
+class TrialProtocol(BaseModel):
+    required_valid_attempts: int=Field(ge=1,le=1000)
+    minimum_pass_rate: float=Field(gt=0,le=1,allow_inf_nan=False)
+    rationale: str=Field(min_length=5,max_length=1000)
+
+
 class CriteriaRequest(BaseModel):
     source: str=Field(min_length=5,max_length=1000)
     approved: bool=False
     rules: dict[str,Rule]
+    protocol: TrialProtocol | None=None
 
 
 def require(db, model, key):
@@ -207,7 +224,7 @@ def require(db, model, key):
 
 
 @app.get('/api/health')
-def health(): return {'status':'ok','version':'0.3.0','scope':'M1-M3 table trial; local accounts, one training device'}
+def health(): return {'status':'ok','version':'0.4.0','scope':'M1-M3 table trial; local accounts, one training device'}
 
 
 @app.get('/api/catalog')
@@ -261,7 +278,7 @@ def readiness(body:ReadyRequest, user=Depends(current_user)):
             if not config['cue_markers'] or config['motion_threshold']<=0:
                 raise HTTPException(422,'การประมาณ Follow-through ต้องมี marker และเกณฑ์เริ่มเคลื่อนลูกจากการนำร่อง')
             config['required']=['side','top']
-        config['software_version']='table-trial-m1-m3-v0.3'
+        config['software_version']='table-trial-m1-m3-v0.4'
         if config['mode']=='LIVE':
             hashes={}
             for camera,key in [('side','pose_model'),('top','ball_model')]:
@@ -293,14 +310,19 @@ def start_session(body:StartRequest, user=Depends(current_user)):
         old=db.get(TrainingSession,sid)
         if old:
             owned_session(db, sid, user)
-            if old.criteria_id!=body.criteria_id: raise HTTPException(409,'request_id ถูกใช้กับคำขออื่นแล้ว')
+            if old.criteria_id!=body.criteria_id or old.configuration_snapshot.get('purpose','PILOT')!=body.purpose:
+                raise HTTPException(409,'request_id ถูกใช้กับคำขออื่นแล้ว')
             return {'id':old.id,'status':old.status}
         if runtime.session_id: raise HTTPException(409,'มีรอบฝึกที่ยังไม่จบ')
         if runtime.owner_profile_id != user['profile_id']: raise HTTPException(409,'กรุณาตรวจความพร้อมด้วยบัญชีนี้ก่อน')
         if not runtime.snapshot()['ready']: raise HTTPException(409,'กล้องหรือข้อมูลยังไม่พร้อม')
         c=require(db,Criteria,body.criteria_id)
         if c.exercise_id!=runtime.config['exercise_id']: raise HTTPException(409,'เกณฑ์ไม่ตรงกับแบบฝึกที่ตรวจความพร้อม')
-        s=TrainingSession(id=sid,profile_id=user['profile_id'],criteria_id=c.id,configuration_snapshot=dict(runtime.config))
+        if body.purpose=='ASSESSMENT':
+            problem=assessment_problem(c.definition,runtime.config)
+            if problem: raise HTTPException(422,problem)
+        configuration={**runtime.config,'purpose':body.purpose}
+        s=TrainingSession(id=sid,profile_id=user['profile_id'],criteria_id=c.id,configuration_snapshot=configuration)
         db.add(s)
     runtime.session_id=sid
     return {'id':sid,'status':'IN_PROGRESS'}
@@ -320,6 +342,9 @@ def begin_attempt(sid:str,body:AttemptRequest, user=Depends(current_user)):
         s=require(db,TrainingSession,sid)
         if s.status!='IN_PROGRESS' or runtime.session_id!=sid: raise HTTPException(409,'รอบนี้ไม่ได้กำลังทำงาน')
         if runtime.attempt_id: raise HTTPException(409,'ต้องจบครั้งก่อนหน้า')
+        current=detail(db,s)
+        if current['protocol_result']['remaining']==0:
+            raise HTTPException(409,'ครบจำนวนครั้งที่ประเมินได้แล้ว กรุณาจบรอบและดูสรุป')
         if not runtime.snapshot()['ready']: raise HTTPException(409,'ข้อมูลกล้องไม่พร้อม')
         number=(db.scalar(select(func.max(Attempt.attempt_number)).where(Attempt.session_id==sid)) or 0)+1
         db.add(Attempt(id=aid,session_id=sid,attempt_number=number))
@@ -342,7 +367,7 @@ def finish_attempt(aid:str,body:FinishRequest, user=Depends(current_user)):
             s=require(db,TrainingSession,a.session_id); c=require(db,Criteria,s.criteria_id)
             exercise=require(db,Exercise,c.exercise_id)
             config=s.configuration_snapshot
-            measured=summarize(samples,config['baseline_seconds'])
+            measured=summarize(samples,config['baseline_seconds'],config.get('min_valid_frames',5),config.get('min_valid_ratio',.7))
             measured.update(cue_metrics(samples,config['baseline_seconds'],config))
             balls,events=ball_metrics(samples,config,exercise.setup_definition)
             measured.update(balls)
@@ -352,11 +377,9 @@ def finish_attempt(aid:str,body:FinishRequest, user=Depends(current_user)):
             else: status,reason=evaluate(measured,c.definition)
             a.result_status=status; a.result_reason=reason; a.ended_at=now()
             a.evidence={'samples':samples,'events':events,'source':config['mode'],
-                        'algorithm':'table-trial-m1-m3-v0.3','segmentation':'manual-start-stop',
+                        'algorithm':'table-trial-m1-m3-v0.4','segmentation':'manual-start-stop',
                         'display_timing':body.display_timing.model_dump() if body.display_timing else None,
-                        'quality':{'samples':len(samples),'duration_s':samples[-1]['t']-samples[0]['t'] if len(samples)>1 else 0,
-                                   'not_ready_frames':sum(not x.get('ready',False) for x in samples),
-                                   'processing_ms':stats([x.get('processing_ms') for x in samples])}}
+                        'quality':data_quality(samples,config['baseline_seconds'])}
             for metric in db.scalars(select(MetricDefinition)):
                 value=measured.get(metric.code)
                 if value is not None and not math.isfinite(value): value=None
@@ -373,6 +396,14 @@ def finish_session(sid:str,body:FinishRequest, user=Depends(current_user)):
     with DB() as db:
         owned_session(db, sid, user)
     with runtime.lock:
+        with DB() as db:
+            s=owned_session(db,sid,user)
+            if s.status=='IN_PROGRESS' and not body.aborted:
+                if runtime.session_id==sid and runtime.attempt_id:
+                    raise HTTPException(409,'จบการบันทึกครั้งนี้ก่อนจบรอบ หรือเลือกยุติรอบ')
+                result=detail(db,s)['protocol_result']
+                if result['purpose']=='ASSESSMENT' and result['remaining'] not in (None,0):
+                    raise HTTPException(409,f"ยังขาดผล PASS/FAIL อีก {result['remaining']} ครั้ง หากไม่ทำต่อให้เลือกยุติรอบ")
         if runtime.session_id==sid and runtime.attempt_id:
             finish_attempt(runtime.attempt_id,FinishRequest(aborted=True),user)
         with DB.begin() as db:
@@ -403,7 +434,8 @@ def detail(db,s):
     return {'id':s.id,'name':e.name,'exercise_id':e.id,'criteria_id':s.criteria_id,
             'criteria':c.definition,'config':s.configuration_snapshot,'started_at':s.started_at,
             'ended_at':s.ended_at,'status':s.status,'counts':counts,'pass_rate':counts['PASS']/total if total else None,
-            'attempts':attempts,'summary':summary,'mode':s.configuration_snapshot['mode']}
+            'attempts':attempts,'summary':summary,'mode':s.configuration_snapshot['mode'],
+            'protocol_result':protocol_result(counts,c.definition,s.configuration_snapshot,s.status)}
 
 
 @app.get('/api/sessions')
@@ -441,6 +473,39 @@ def compare(left:str,right:str, user=Depends(current_user)):
                  for k in METRICS}}
 
 
+@app.get('/api/sessions/{sid}/evidence.zip')
+def evidence_bundle(sid:str,user=Depends(current_user)):
+    import tempfile
+    from zipfile import ZipFile,ZIP_STORED
+    from .recordings import ROOT,recorded_path
+    data=json.loads(export(sid,user).body)
+    directory=ROOT/'data/exports';directory.mkdir(parents=True,exist_ok=True)
+    stream=tempfile.SpooledTemporaryFile(max_size=16*1024*1024,dir=directory)
+    included=missing=0
+    try:
+        with ZipFile(stream,'w',ZIP_STORED) as bundle:
+            for evidence in data['evidence']:
+                for index,sample in enumerate(evidence.get('samples',[])):
+                    paths={}
+                    for camera,value in sample.get('recorded_images',{}).items():
+                        if camera not in ('side','top'):continue
+                        path=recorded_path(value,user['profile_id'])
+                        if not path.is_file():missing+=1;continue
+                        name=f"recordings/{evidence['attempt_id']}/{camera}/{index:06d}.jpg"
+                        bundle.write(path,name);paths[camera]=name;included+=1
+                    sample['recorded_images']=paths
+            data['bundle_summary']={'included_images':included,'missing_images':missing}
+            bundle.writestr('session.json',json.dumps(data,ensure_ascii=False,allow_nan=False))
+        stream.seek(0)
+    except Exception:
+        stream.close();raise
+    def chunks():
+        try:
+            while chunk:=stream.read(1024*1024):yield chunk
+        finally:stream.close()
+    return StreamingResponse(chunks(),media_type='application/zip',headers={'Content-Disposition':'attachment; filename="trial-evidence.zip"'})
+
+
 @app.get('/api/status')
 def status(user=Depends(current_user)): return private_snapshot(user)
 
@@ -448,6 +513,20 @@ def status(user=Depends(current_user)): return private_snapshot(user)
 class PreviewRequest(BaseModel):
     camera: Literal['side','top']
     config: CaptureConfig
+
+
+class ModelRequest(BaseModel):
+    path: str=Field(default='models/snooker.pt',min_length=1,max_length=1000)
+
+
+@app.post('/api/models/inspect')
+@serialized
+def inspect_ball_model(body:ModelRequest):
+    if runtime.session_id: raise HTTPException(409,'จบรอบฝึกก่อนตรวจโมเดล')
+    from .model_info import inspect_model
+    try: return inspect_model(body.path)
+    except ImportError: raise HTTPException(400,'ติดตั้ง backend/requirements-vision.txt ก่อนใช้ YOLO')
+    except Exception as exc: raise HTTPException(422,str(exc)) from exc
 
 
 @app.post('/api/cameras/preview')
@@ -509,6 +588,8 @@ def progress(user=Depends(current_user)):
             output.append({'exercise_id':exercise.id,'sessions':len(sessions),
                 'attempts':sum(len(s['attempts']) for s in sessions),
                 'live_pass':sum(s['counts']['PASS'] for s in sessions if s['mode']=='LIVE'),
+                'assessments_completed':sum(s['protocol_result']['purpose']=='ASSESSMENT' for s in sessions),
+                'assessments_passed':sum(s['protocol_result']['status']=='PASS' for s in sessions),
                 'demo_sessions':sum(s['mode']=='DEMO' for s in sessions)})
         return output
 

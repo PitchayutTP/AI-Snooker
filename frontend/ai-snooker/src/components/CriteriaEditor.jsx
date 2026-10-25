@@ -7,6 +7,8 @@ export function CriteriaEditor({ exercise, units, disabled, onSaved }) {
     [approved, setApproved] = useState(false);
   const [error, setError] = useState(""),
     [saving, setSaving] = useState(false);
+  const [useProtocol,setUseProtocol]=useState(false);
+  const [protocol,setProtocol]=useState({required_valid_attempts:'',minimum_pass_percent:'',rationale:''});
   const options = exercise?.lesson?.metrics || [];
   function update(index, key, value) {
     setRows(
@@ -41,10 +43,18 @@ export function CriteriaEditor({ exercise, units, disabled, onSaved }) {
       }
       if (approved && !rows.length)
         throw new Error("ต้องเพิ่มตัวชี้วัดก่อนยืนยันเกณฑ์");
+      let plan;
+      if(useProtocol) {
+        const n=Number(protocol.required_valid_attempts),rate=Number(protocol.minimum_pass_percent);
+        if(!Number.isInteger(n) || n<1 || n>1000 || !Number.isFinite(rate) || rate<=0 || rate>100 || protocol.rationale.trim().length<5)
+          throw new Error('ระบุ N (1–1000) อัตราผ่าน (มากกว่า 0 ถึง 100%) และที่มาของแผนอย่างน้อย 5 ตัวอักษร');
+        plan={required_valid_attempts:n,minimum_pass_rate:rate/100,rationale:protocol.rationale};
+      }
       const result = await api(`/exercises/${exercise.id}/criteria`, {
         source,
         approved,
         rules,
+        protocol:plan,
       });
       await onSaved(result.id);
       setRows([]);
@@ -131,6 +141,15 @@ export function CriteriaEditor({ exercise, units, disabled, onSaved }) {
               เพิ่มตัวชี้วัด
             </button>
           </div>
+          <label className="check">
+            <input type="checkbox" checked={useProtocol} onChange={e=>setUseProtocol(e.target.checked)}/>กำหนดแผนประเมินรายรอบตามข้อมูลนำร่อง
+          </label>
+          {useProtocol && <div className="panel">
+            <label>จำนวนครั้งที่มีผล PASS/FAIL (N)<input type="number" min="1" max="1000" required value={protocol.required_valid_attempts} onChange={e=>setProtocol({...protocol,required_valid_attempts:e.target.value})}/></label>
+            <label>อัตราผ่านขั้นต่ำ (%)<input type="number" min="0.01" max="100" step="any" required value={protocol.minimum_pass_percent} onChange={e=>setProtocol({...protocol,minimum_pass_percent:e.target.value})}/></label>
+            <label>เหตุผล/ที่มาของจำนวนครั้งและอัตราผ่าน<textarea required minLength={5} maxLength={1000} value={protocol.rationale} onChange={e=>setProtocol({...protocol,rationale:e.target.value})}/></label>
+            <p className="muted">ระบบไม่กำหนดค่าเริ่มต้นแทนผู้จัดทำ ครั้งที่ INVALID/ABORTED ไม่นับเข้า N</p>
+          </div>}
           <label className="check">
             <input
               type="checkbox"

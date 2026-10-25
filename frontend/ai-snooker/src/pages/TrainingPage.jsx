@@ -1,3 +1,4 @@
+import { ProtocolStatus } from "../components/ProtocolStatus";
 import { CameraViews } from "../components/CameraViews";
 import { Button, Badge, Table } from "../components/ui";
 import { Feedback } from "../components/Feedback";
@@ -5,7 +6,7 @@ import { LiveValues } from "../components/LiveValues";
 import { Trajectory } from "../components/Trajectory";
 import { number } from "../lib/api";
 import { labels } from "../lib/labels";
-export default function TrainingPage({ onDisplayed, status, active, frame, config, busy, connected, run, finishAttempt, startAttempt, finishSession, lastAttempt, units }) {
+export default function TrainingPage({ activeReport, onDisplayed, status, active, frame, config, busy, connected, run, finishAttempt, startAttempt, finishSession, lastAttempt, units }) {
   return (<>
             <div className="heading">
               <h1>ฝึกและบันทึกผล</h1>
@@ -17,6 +18,7 @@ export default function TrainingPage({ onDisplayed, status, active, frame, confi
               </p>
             ) : (
               <>
+                <ProtocolStatus result={activeReport?.protocol_result}/>
                 <div className="columns training">
                   <CameraViews status={status} onDisplayed={onDisplayed}/>
                   <section className="panel">
@@ -54,7 +56,7 @@ export default function TrainingPage({ onDisplayed, status, active, frame, confi
                         </>
                       ) : (
                         <Button
-                          disabled={busy || !connected || !status.ready}
+                          disabled={busy || !connected || !status.ready || activeReport?.protocol_result?.remaining===0}
                           onClick={() => run(startAttempt)}
                         >
                           เริ่มบันทึกครั้งใหม่
@@ -63,10 +65,11 @@ export default function TrainingPage({ onDisplayed, status, active, frame, confi
                       <Button
                         secondary
                         disabled={busy || !connected || !!status.attempt_id}
-                        onClick={() => run(finishSession)}
+                        onClick={() => run(()=>finishSession(false))}
                       >
                         จบรอบและดูสรุป
                       </Button>
+                      <Button secondary disabled={busy || !connected} onClick={()=>run(()=>finishSession(true))}>ยุติรอบก่อนจบแผน</Button>
                     </div>
                     {status.attempt_id && (
                       <p className="muted">จบหรือยกเลิกครั้งนี้ก่อนจบรอบ</p>

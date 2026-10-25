@@ -1,3 +1,4 @@
+import { ProtocolStatus } from "../components/ProtocolStatus";
 import { QualityReport } from "../components/QualityReport";
 import { Button, Badge, Table } from "../components/ui";
 import { Feedback } from "../components/Feedback";
@@ -11,6 +12,7 @@ export default function SummaryPage({ report, navigate }) {
               </p>
               <Badge value={report.mode} />
             </div>
+            <ProtocolStatus result={report.protocol_result}/>
             <div className="stats">
               {[
                 ["จำนวนครั้ง", report.attempts.length],
@@ -65,6 +67,7 @@ export default function SummaryPage({ report, navigate }) {
                 >
                   ดาวน์โหลดผล JSON
                 </a>
+                <a className="button secondary" href={`/api/sessions/${report.id}/evidence.zip`} download>ดาวน์โหลด ZIP หลักฐานและภาพดิบ</a>
                 <Button onClick={() => navigate("history")}>
                   ดูประวัติการฝึก
                 </Button>
