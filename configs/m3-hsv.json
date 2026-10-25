@@ -1,0 +1,15 @@
+{
+  "ball_detector": "HSV",
+  "ball_colours": {
+    "cue_ball": [{"lower": [0, 0, 160], "upper": [179, 75, 255]}],
+    "target_ball": [
+      {"lower": [0, 110, 70], "upper": [10, 255, 255]},
+      {"lower": [170, 110, 70], "upper": [179, 255, 255]}
+    ]
+  },
+  "ball_min_area": 50,
+  "ball_max_area": 5000,
+  "ball_max_jump": 120,
+  "max_frame_gap_s": 0.25,
+  "setup_notes": "Starting parameters only; calibrate table and ball radius, then tune colour/area/jump for actual camera and lighting."
+}

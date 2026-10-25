@@ -1,18 +1,11 @@
 import os
 from datetime import datetime, timezone
-from pathlib import Path
-from sqlalchemy import create_engine, String, Integer, Float, ForeignKey, JSON, UniqueConstraint, event, text
+from sqlalchemy import create_engine, String, Integer, Float, ForeignKey, JSON, UniqueConstraint, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from .database_config import database_url
 
-ROOT = Path(__file__).resolve().parents[2]
-DATA = ROOT / 'data'
-DATA.mkdir(exist_ok=True)
-URL = os.getenv('DATABASE_URL', 'sqlite:///' + (DATA/'snooker.db').as_posix())
-engine = create_engine(URL, connect_args={'check_same_thread': False} if URL.startswith('sqlite') else {})
-if URL.startswith('sqlite'):
-    @event.listens_for(engine, 'connect')
-    def enable_fk(connection, _):
-        connection.execute('PRAGMA foreign_keys=ON')
+URL = database_url(os.getenv('DATABASE_URL'))
+engine = create_engine(URL, pool_pre_ping=True)
 DB = sessionmaker(engine, expire_on_commit=False)
 
 

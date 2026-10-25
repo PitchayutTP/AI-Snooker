@@ -92,6 +92,13 @@ class CaptureConfig(BaseModel):
     hand: Literal['LEFT','RIGHT']='RIGHT'
     side_source: str='0'
     top_source: str='1'
+    camera_backend: Literal['AUTO','DSHOW','MSMF']='AUTO'
+    camera_mjpeg: bool=False
+    capture_width: int=Field(default=1280,ge=320,le=3840)
+    capture_height: int=Field(default=720,ge=240,le=2160)
+    capture_fps: int=Field(default=30,ge=5,le=120)
+    calibration_image_size: list[int]=Field(default_factory=list)
+    side_image_size: list[int]=Field(default_factory=list)
     pose_model: str='models/pose_landmarker.task'
     ball_model: str='models/snooker.pt'
     ball_detector: Literal['HSV','YOLO']='HSV'
@@ -121,6 +128,8 @@ class CaptureConfig(BaseModel):
     setup_notes: str=Field(default='',max_length=2000)
     @model_validator(mode='after')
     def geometry(self):
+        for size in [self.calibration_image_size,self.side_image_size]:
+            if size and (len(size)!=2 or any(x<=0 for x in size)): raise ValueError('ขนาดภาพต้องเป็น [width,height] มากกว่าศูนย์')
         if self.ball_min_area >= self.ball_max_area: raise ValueError('ball_min_area ต้องน้อยกว่า ball_max_area')
         if self.ball_detector=='HSV':
             if set(self.ball_colours)!={'cue_ball','target_ball'}: raise ValueError('HSV ต้องกำหนดลูกขาวและลูกเป้าอย่างละหนึ่งบทบาท')
@@ -142,9 +151,11 @@ class CaptureConfig(BaseModel):
             for marker in self.cue_markers:
                 for k in ['lower','upper']:
                     v=marker.get(k,[])
-                    if len(v)!=3 or any(not isinstance(x,int) or x<0 or x>255 for x in v):
+                    if len(v)!=3 or any(type(x) is not int or x<0 or x>limit for x,limit in zip(v,[179,255,255])):
                         raise ValueError('HSV bounds ไม่ถูกต้อง')
                 if any(a>b for a,b in zip(marker['lower'],marker['upper'])): raise ValueError('HSV lower > upper')
+                area=marker.get('min_area',10)
+                if type(area) not in (float,int) or not math.isfinite(area) or area<=0: raise ValueError('พื้นที่ marker ต้องมากกว่าศูนย์')
         if self.side_ball_center is not None and (len(self.side_ball_center)!=2 or any(not math.isfinite(x) for x in self.side_ball_center)):
             raise ValueError('side_ball_center ต้องเป็นพิกัดพิกเซลสองค่า')
         return self
@@ -161,7 +172,16 @@ class StartRequest(BaseModel):
 
 
 class AttemptRequest(BaseModel): request_id: UUID
-class FinishRequest(BaseModel): aborted: bool=False
+class DisplayTiming(BaseModel):
+    n: int=Field(ge=0,le=6000)
+    median_ms: float=Field(ge=0,allow_inf_nan=False)
+    p95_ms: float=Field(ge=0,allow_inf_nan=False)
+    max_ms: float=Field(ge=0,allow_inf_nan=False)
+    clock_uncertainty_ms: float=Field(ge=0,allow_inf_nan=False)
+
+class FinishRequest(BaseModel):
+    aborted: bool=False
+    display_timing: DisplayTiming | None=None
 
 
 class Rule(BaseModel):
@@ -187,7 +207,7 @@ def require(db, model, key):
 
 
 @app.get('/api/health')
-def health(): return {'status':'ok','version':'0.2.0','scope':'local accounts, one training device'}
+def health(): return {'status':'ok','version':'0.3.0','scope':'M1-M3 table trial; local accounts, one training device'}
 
 
 @app.get('/api/catalog')
@@ -230,6 +250,10 @@ def readiness(body:ReadyRequest, user=Depends(current_user)):
         exercise=require(db,Exercise,body.exercise_id)
         if exercise.module_id not in LESSONS: raise HTTPException(409,'prototype นี้ยังไม่เปิดแบบฝึกแก้สนุก')
         config=body.config.model_dump()
+        required=exercise.setup_definition['requires']
+        if config['delivery_ball_timing'] and exercise.module_id==2: required=['side','top']
+        if config['mode']=='LIVE' and len(required)==2 and config['side_source']==config['top_source']:
+            raise HTTPException(422,'กล้องด้านข้างและด้านบนต้องเป็นคนละอุปกรณ์')
         if config['mode']=='LIVE' and exercise.module_id==2 and len(config['cue_markers'])!=2:
             raise HTTPException(422,'การส่งคิว LIVE ต้องตั้งค่า cue_markers สองสีเรียงด้านปลายคิวก่อนด้านท้าย')
         config.update(required=exercise.setup_definition['requires'],exercise_id=exercise.id)
@@ -237,12 +261,14 @@ def readiness(body:ReadyRequest, user=Depends(current_user)):
             if not config['cue_markers'] or config['motion_threshold']<=0:
                 raise HTTPException(422,'การประมาณ Follow-through ต้องมี marker และเกณฑ์เริ่มเคลื่อนลูกจากการนำร่อง')
             config['required']=['side','top']
-        config['software_version']='prototype-3modules-v0.2'
+        config['software_version']='table-trial-m1-m3-v0.3'
         if config['mode']=='LIVE':
             hashes={}
             for camera,key in [('side','pose_model'),('top','ball_model')]:
-                if camera in config['required'] and (key!='ball_model' or config['ball_detector']=='YOLO') and Path(config[key]).is_file():
-                    with open(config[key],'rb') as model_file:
+                model=Path(config[key])
+                if not model.is_absolute(): model=Path(__file__).resolve().parents[1]/model
+                if camera in config['required'] and (key!='ball_model' or config['ball_detector']=='YOLO') and model.is_file():
+                    with open(model,'rb') as model_file:
                         hashes[key]=hashlib.file_digest(model_file,'sha256').hexdigest()
             config['model_sha256']=hashes
         if config['mode']=='LIVE' and 'top' in config['required']:
@@ -326,7 +352,11 @@ def finish_attempt(aid:str,body:FinishRequest, user=Depends(current_user)):
             else: status,reason=evaluate(measured,c.definition)
             a.result_status=status; a.result_reason=reason; a.ended_at=now()
             a.evidence={'samples':samples,'events':events,'source':config['mode'],
-                        'algorithm':'prototype-3modules-v0.2','segmentation':'manual-start-stop'}
+                        'algorithm':'table-trial-m1-m3-v0.3','segmentation':'manual-start-stop',
+                        'display_timing':body.display_timing.model_dump() if body.display_timing else None,
+                        'quality':{'samples':len(samples),'duration_s':samples[-1]['t']-samples[0]['t'] if len(samples)>1 else 0,
+                                   'not_ready_frames':sum(not x.get('ready',False) for x in samples),
+                                   'processing_ms':stats([x.get('processing_ms') for x in samples])}}
             for metric in db.scalars(select(MetricDefinition)):
                 value=measured.get(metric.code)
                 if value is not None and not math.isfinite(value): value=None
@@ -364,6 +394,8 @@ def detail(db,s):
             measurements[d.code]={'value':m.value,'unit':d.unit,'status':m.validity_status,'reason':m.invalid_reason}
         attempts.append({'id':a.id,'number':a.attempt_number,'status':a.result_status,
                          'reason':a.result_reason,'metrics':measurements,
+                         'quality':a.evidence.get('quality',{}),
+                         'display_timing':a.evidence.get('display_timing'),
                          'feedback':feedback({k:v['value'] for k,v in measurements.items()},c.definition.get('rules'))})
     total=counts['PASS']+counts['FAIL']
     summary={code:stats([a['metrics'].get(code,{}).get('value') for a in attempts
@@ -411,6 +443,42 @@ def compare(left:str,right:str, user=Depends(current_user)):
 
 @app.get('/api/status')
 def status(user=Depends(current_user)): return private_snapshot(user)
+
+
+class PreviewRequest(BaseModel):
+    camera: Literal['side','top']
+    config: CaptureConfig
+
+
+@app.post('/api/cameras/preview')
+@serialized
+def camera_preview(body:PreviewRequest,user=Depends(current_user)):
+    if runtime.session_id: raise HTTPException(409,'จบรอบฝึกก่อนเปิดภาพตั้งค่า')
+    runtime.stop()
+    config=body.config.model_dump()
+    config.update(mode='LIVE',preview_only=True,preview_camera=body.camera)
+    with runtime.lock: runtime.owner_profile_id=user['profile_id']
+    try: runtime.start(config)
+    except Exception as exc: raise HTTPException(400,str(exc)) from exc
+    return {'status':'PREVIEW','camera':body.camera}
+
+
+@app.post('/api/cameras/stop')
+@serialized
+def camera_stop(user=Depends(current_user)):
+    with runtime.lock:
+        if runtime.owner_profile_id not in (None,user['profile_id']): raise HTTPException(409,'กล้องถูกใช้งานโดยบัญชีอื่น')
+        if runtime.session_id: raise HTTPException(409,'จบรอบฝึกก่อนปิดกล้อง')
+    runtime.stop()
+    with runtime.lock:
+        runtime.config={}; runtime.error=None; runtime.owner_profile_id=None
+    return {'status':'STOPPED'}
+
+
+@app.get('/api/clock')
+def server_clock():
+    import time
+    return {'epoch_ms':time.time()*1000}
 
 
 @app.websocket('/ws')
@@ -462,6 +530,6 @@ def calibration(body:CalibrationRequest):
             'table_points':[[0,0],[body.table_width,0],[body.table_width,body.table_height],[0,body.table_height]],
             'check_image_points':[body.check_image_point], 'check_table_points':[body.check_table_point]})
     except ImportError:
-        raise HTTPException(400,'ต้องติดตั้ง requirements-camera.txt ก่อนสอบเทียบ')
+        raise HTTPException(400,'ต้องติดตั้ง backend/requirements-camera.txt ก่อนสอบเทียบ')
     except (ValueError, TypeError) as exc:
         raise HTTPException(422,str(exc)) from exc

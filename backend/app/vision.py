@@ -3,6 +3,7 @@ import math
 import time
 from pathlib import Path
 from .metrics import angle, distance, line_distance, fraction_estimate
+from .cameras import open_camera, encode_image
 
 
 class DemoSource:
@@ -27,7 +28,7 @@ class LiveSource:
             for name in config['required']:
                 source=config[f'{name}_source']
                 # Camera indices or video paths; files must be explicitly selected.
-                cap=cv2.VideoCapture(int(source) if str(source).isdigit() else source)
+                cap=open_camera(cv2,source,config)
                 self.caps[name]=cap
                 if not cap.isOpened(): raise ValueError(f'เปิดกล้อง/วิดีโอ {name} ไม่ได้')
             if 'side' in self.caps:
@@ -48,9 +49,10 @@ class LiveSource:
                     self.colour=ColourTracker(config['ball_colours'],config['ball_min_area'],config['ball_max_area'],config['ball_max_jump'],config['max_frame_gap_s'])
                 else:
                     from ultralytics import YOLO
-                    model=config['ball_model']
-                    if not Path(model).is_file(): raise ValueError('ไม่พบโมเดลลูกที่ฝึกไว้ (.pt)')
-                    self.yolo=YOLO(model)
+                    model=Path(config['ball_model'])
+                    if not model.is_absolute(): model=Path(__file__).resolve().parents[1]/model
+                    if not model.is_file(): raise ValueError('ไม่พบโมเดลลูกที่ฝึกไว้ (.pt)')
+                    self.yolo=YOLO(str(model))
             self.ts=0
         except Exception:
             self.close()
@@ -60,16 +62,22 @@ class LiveSource:
         cv2=self.cv2
         import numpy as np
         start=time.monotonic()
-        sample={'t':start,'source':'LIVE','image':None,'balls':[],'cue':None,
+        sample={'t':start,'capture_epoch_ms':time.time()*1000,'source':'LIVE','image':None,'balls':[],'cue':None,
                 'elbow':None,'head':None,'bridge':None,'torso':None,'stance':None,
                 'error':None,'ready':True}
         frames={}; times={}
+        # Grab all devices before decoding; timestamps describe receipt, not hardware sync.
+        grabbed={name:cap.grab() for name,cap in self.caps.items()}
         for name,cap in self.caps.items():
-            ok,frame=cap.read(); times[name]=time.monotonic()
+            ok,frame=cap.retrieve() if grabbed[name] else (False,None)
+            times[name]=time.monotonic()
             if not ok:
                 sample.update(ready=False,error=f'{name}: กล้องขาดการเชื่อมต่อหรือวิดีโอสิ้นสุด')
                 return sample
             frames[name]=frame
+            expected=self.config.get('calibration_image_size') if name=='top' else self.config.get('side_image_size')
+            if expected and list(expected)!=[frame.shape[1],frame.shape[0]]:
+                raise ValueError(f'ความละเอียดกล้อง {name} เปลี่ยน ต้องสอบเทียบ/เลือกจุดใหม่')
         sample['capture_ms']=(time.monotonic()-start)*1000
         sample['frame_receive_times']=times
         if len(times)==2 and abs(times['side']-times['top'])*1000>self.config['sync_tolerance_ms']:
@@ -158,7 +166,7 @@ class LiveSource:
         if 'top' in frames:
             sample['ready']=sample['ready'] and all(
                 len([b for b in sample['balls'] if b['class']==name and b['id'] is not None])==1
-                for name in ['cue_ball','target_ball'])
+                for name in (['cue_ball','target_ball'] if self.config['exercise_id']>=3 else ['cue_ball']))
         issues=[]
         if 'side' in frames:
             required=[('elbow','ไหล่ ศอก และข้อมือด้านถือคิว'),('head','ศีรษะ'),('bridge','ข้อมือด้านสะพานมือ')]
@@ -169,9 +177,16 @@ class LiveSource:
             issues += [f'ยังตรวจไม่พบ{label}ชัดเจน' for key,label in required if sample.get(key) is None]
         if 'top' in frames:
             for role,label in [('cue_ball','ลูกขาว'),('target_ball','ลูกเป้า')]:
+                if role=='target_ball' and self.config['exercise_id']==2: continue
                 if len([b for b in sample['balls'] if b['class']==role and b['id'] is not None])!=1:
                     issues.append(f'ต้องตรวจพบ{label}พร้อมรหัสติดตามอย่างละหนึ่งลูก')
         sample['readiness_issues']=issues
+        sample['images']={}
+        sample['image_sizes']={}
+        for name,raw in frames.items():
+            small=cv2.resize(raw,(640,int(raw.shape[0]*640/raw.shape[1])))
+            sample['images'][name]=encode_image(cv2,small,65)
+            sample['image_sizes'][name]=[raw.shape[1],raw.shape[0]]
         sample['processing_ms']=(time.monotonic()-start)*1000
         return sample
 
@@ -184,6 +199,9 @@ def ball_metrics(samples, config, setup):
     """Experimental discrete contact/rail candidates. Must be validated with labels.
     Reject gaps, missing IDs, ambiguity and ID switches instead of joining traces.
     """
+    if 'fraction' in setup:
+        from .contact import contact_metrics
+        return contact_metrics(samples,config,setup)
     result={'contact_fraction':None,'fraction_error':None,'escape_success':None}
     events=[]; previous=None; previous_t=None; track_ids=None; rail=None; hit=False
     radius=config.get('ball_radius',0)

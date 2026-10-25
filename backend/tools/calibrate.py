@@ -20,6 +20,8 @@ def calibrate(data):
         raise ValueError('Independent check points are required')
     if not all(np.isfinite(p).all() for p in [image,table,checks,targets]):
         raise ValueError('Coordinates must be finite')
+    if len(image)==4 and (not cv2.isContourConvex(image.astype(np.float32)) or not cv2.isContourConvex(table.astype(np.float32))):
+        raise ValueError('Four corners must form a convex quadrilateral in matching perimeter order')
     h,_=cv2.findHomography(image,table,method=0)
     if h is None or abs(np.linalg.det(h))<1e-12: raise ValueError('Degenerate geometry')
     predicted=cv2.perspectiveTransform(checks.reshape(-1,1,2),h).reshape(-1,2)

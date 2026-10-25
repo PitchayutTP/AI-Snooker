@@ -1,0 +1,8 @@
+{
+  "cue_markers": [
+    {"lower": [90, 90, 60], "upper": [130, 255, 255], "min_area": 10},
+    {"lower": [18, 90, 60], "upper": [38, 255, 255], "min_area": 10}
+  ],
+  "delivery_ball_timing": false,
+  "setup_notes": "Starting HSV ranges only. Pick actual marker colours in raw side preview; tip-side marker comes first."
+}

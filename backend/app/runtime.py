@@ -3,6 +3,7 @@ import time
 import statistics
 from .metrics import distance, line_distance
 from .vision import DemoSource, LiveSource
+from .cameras import PreviewSource
 
 
 class Runtime:
@@ -14,7 +15,7 @@ class Runtime:
 
     def start(self, config):
         self.stop()
-        source=DemoSource(config) if config['mode']=='DEMO' else LiveSource(config)
+        source=PreviewSource(config) if config.get('preview_only') else DemoSource(config) if config['mode']=='DEMO' else LiveSource(config)
         self.stop_event.clear(); self.config=config; self.error=None; self.latest=None
         def worker():
             try:
@@ -30,10 +31,10 @@ class Runtime:
                             if len(self.samples)>=6000:
                                 self.error='จำนวนเฟรมเกินขีดจำกัด กรุณาจบครั้งหรือยกเลิก'
                                 self.collecting=False
-                            else: self.samples.append({k:v for k,v in sample.items() if k!='image'})
+                            else: self.samples.append({k:v for k,v in sample.items() if k not in ('image','images')})
                     if sample.get('error'):
                         self.error=sample.get('error'); break
-                    self.stop_event.wait(.05)
+                    self.stop_event.wait(.1 if config.get('preview_only') else .05 if config['mode']=='DEMO' else .001)
             except Exception as exc:
                 self.error=str(exc)
             finally:
