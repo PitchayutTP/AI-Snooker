@@ -12,6 +12,7 @@ export default function CriteriaPage({ exercise, criteria, units, setPage, activ
             </div>
             <section className="panel">
               <p>{criteria?.source || "ยังไม่ระบุแหล่งที่มา"}</p>
+              {criteria?.minimum_active_seconds && <p>แต่ละครั้งต้องมีช่วงวัดหลังเก็บฐานอย่างน้อย {criteria.minimum_active_seconds} วินาที มิฉะนั้นเป็น INVALID และไม่นับเข้าแผน</p>}
               {criteria?.protocol && <p className="notice">แผน: ผล PASS/FAIL {criteria.protocol.required_valid_attempts} ครั้ง · ผ่านขั้นต่ำ {criteria.protocol.minimum_pass_rate*100}% · {criteria.protocol.rationale}</p>}
               <Badge
                 value={

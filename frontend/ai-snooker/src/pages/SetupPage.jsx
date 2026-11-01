@@ -1,164 +1,57 @@
-import { ModelSettings } from "../components/ModelSettings";
-import { TrialLayout } from "../components/TrialLayout";
-import { CameraSetup } from "../components/CameraSetup";
-import { Button, Field } from "../components/ui";
-import { Guide } from "../components/Guide";
-import { SettingsImport } from "../components/SettingsImport";
-import { Calibration } from "../components/Calibration";
-export default function SetupPage({ user, status, exerciseId, active, choose, catalog, exercise, criteriaId, setCriteriaId, setPage, config, setConfig, setAdvanced, advanced, busy, connected, run, checkReady, prepared, fingerprint, criteria, startSession, frame, setPrepared, setError }) {
-  return (<>
-            <div className="heading">
-              <h1>ตั้งค่าก่อนฝึก</h1>
-              <p className="muted">เลือกแบบฝึกและตรวจสอบกล้องก่อนเริ่มบันทึก</p>
-            </div>
-            <div className="columns">
-              <section className="panel">
-                <Field label="แบบฝึก">
-                  <select
-                    value={exerciseId}
-                    disabled={active}
-                    onChange={(e) =>
-                      choose(
-                        catalog.find((x) => String(x.id) === e.target.value),
-                      )
-                    }
-                  >
-                    {catalog.map((e) => (
-                      <option key={e.id} value={e.id}>
-                        {e.module} — {e.name}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <p>{exercise?.instructions}</p>
-                <Field label="เกณฑ์ประเมิน">
-                  <select
-                    value={criteriaId}
-                    disabled={active}
-                    onChange={(e) => setCriteriaId(e.target.value)}
-                  >
-                    {exercise?.criteria.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        รุ่น {c.version} —{" "}
-                        {c.approved ? "ยืนยันเกณฑ์แล้ว" : "ยังไม่ยืนยันเกณฑ์"}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <Button secondary onClick={() => setPage("criteria")}>
-                  ดูเกณฑ์ประเมิน
-                </Button>
-                <Field label="ประเภทของรอบ">
-                  <select disabled={active} value={config.purpose || 'PILOT'} onChange={e=>setConfig({...config,purpose:e.target.value})}>
-                    <option value="PILOT">นำร่อง — เก็บค่าการวัด</option><option value="ASSESSMENT">ประเมิน — ต้องมีเกณฑ์และแผน N</option>
-                  </select>
-                </Field>
-                {config.purpose==='ASSESSMENT' && <p className="notice">ใช้ LIVE และเกณฑ์ยืนยันที่กำหนด N กับอัตราผ่านแล้ว หากยังไม่มีให้สร้างเกณฑ์รุ่นใหม่</p>}
-                <Field label="โหมดการฝึก">
-                  <select
-                    disabled={active}
-                    value={config.mode}
-                    onChange={(e) =>
-                      setConfig({ ...config, mode: e.target.value })
-                    }
-                  >
-                    <option value="DEMO">DEMO — ทดสอบการทำงาน</option>
-                    <option value="LIVE">LIVE — กล้องจริง</option>
-                  </select>
-                </Field>
-                <Field label="ช่วงเก็บท่าตั้งต้น (วินาที)">
-                  <input type="number" min="0.5" max="10" step="0.5" disabled={active} value={config.baseline_seconds ?? 1} onChange={e=>setConfig({...config,baseline_seconds:Number(e.target.value)})}/>
-                </Field>
-                <Field label="มือที่ถนัด">
-                  <select
-                    disabled={active}
-                    value={config.hand}
-                    onChange={(e) =>
-                      setConfig({ ...config, hand: e.target.value })
-                    }
-                  >
-                    <option value="RIGHT">ขวา</option>
-                    <option value="LEFT">ซ้าย</option>
-                  </select>
-                </Field>
-              </section>
-              <section className="panel">
-                <h2>กล้องและการตรวจจับ</h2>
-                {[
-                  ["side_source", "กล้องด้านข้าง"],
-                  ["top_source", "กล้องด้านบน"],
-                ].map(([key, label]) => (
-                  <Field label={label} key={key}>
-                    <input
-                      disabled={active}
-                      value={config[key]}
-                      onChange={(e) =>
-                        setConfig({ ...config, [key]: e.target.value })
-                      }
-                    />
-                  </Field>
-                ))}
-                <SettingsImport disabled={active} onImport={value=>{try{setAdvanced(JSON.stringify({...JSON.parse(advanced),...JSON.parse(value)},null,2));setPrepared('')}catch(e){setError(e.message)}}}/>
-                <details>
-                  <summary>การตั้งค่าการวัดเพิ่มเติม (JSON)</summary>
-                  <p className="muted">
-                    LIVE ด้านข้างต้องมีโมเดลท่าทาง ด้านบนเลือก HSV (ลูกขาว/แดง) หรือ YOLO และต้องสอบเทียบโต๊ะ
-                  </p>
-                  <textarea
-                    aria-label="การตั้งค่าเพิ่มเติม"
-                    value={advanced}
-                    disabled={active}
-                    onChange={(e) => setAdvanced(e.target.value)}
-                    rows={8}
-                    spellCheck={false}
-                  />
-                </details>
-                <p className="notice">
-                  {config.mode === "DEMO"
-                    ? "DEMO ใช้ข้อมูลจำลอง ผลจะเป็น “ประเมินไม่ได้” และไม่ใช้ยืนยันทักษะ"
-                    : "ใช้กล้องที่เชื่อมต่อกับเครื่อง Backend และจัดตำแหน่งลูกตามคำแนะนำของแบบฝึก"}
-                </p>
-                {status.error && <p className="error">{status.error}</p>}
-                <div className="actions">
-                  <Button
-                    secondary
-                    disabled={busy || active || !connected || !exercise}
-                    onClick={() => run(checkReady)}
-                  >
-                    ตรวจความพร้อม
-                  </Button>
-                  <Button
-                    disabled={
-                      busy ||
-                      active ||
-                      !connected ||
-                      !status.ready ||
-                      prepared !== fingerprint ||
-                      !criteria
-                    }
-                    onClick={() => run(startSession)}
-                  >
-                    เริ่มรอบฝึก
-                  </Button>
-                </div>
-                <p className="muted">
-                  {prepared === fingerprint && connected && status.ready
-                    ? "พร้อมเริ่มรอบฝึก"
-                    : !connected ? "ยังไม่เชื่อมต่อข้อมูลสดกับ Backend"
-                    : prepared !== fingerprint ? "ต้องตรวจความพร้อมหลังเปลี่ยนการตั้งค่า"
-                    : "กล้องเปิดแล้ว กำลังรอข้อมูลตรวจจับครบก่อนเริ่ม"}
-                </p>
-                {prepared === fingerprint && connected && !active && <div aria-live="polite">
-                  {frame.image && <img src={`data:image/jpeg;base64,${frame.image}`} alt="ภาพตรวจความพร้อมก่อนเริ่มฝึก" style={{width:'100%',borderRadius:8}}/>}
-                  {!status.ready && <ul className="notice">{(status.readiness_issues?.length ? status.readiness_issues : ['กำลังรอภาพและผลตรวจจับจากกล้อง']).map(issue=><li key={issue}>{issue}</li>)}</ul>}
-                  {config.mode==='LIVE' && exercise?.module_id===1 && <p className="muted">ถอยกล้องให้เห็นถึงข้อเท้าทั้งสองข้าง พร้อมศีรษะ ไหล่ ศอก ข้อมือ และสะโพก กล้องที่เห็นเฉพาะใบหน้าจะยังเริ่มโมดูลนี้ไม่ได้</p>}
-                </div>}
-              </section>
-            </div>
-            <Guide exercise={exercise}/>
-            <TrialLayout exercise={exercise} advanced={advanced}/>
-            <ModelSettings advanced={advanced} onChange={value=>{setAdvanced(value);setPrepared('')}} disabled={active || busy}/>
-            <CameraSetup config={config} setConfig={setConfig} advanced={advanced} onAdvanced={setAdvanced} status={status} disabled={active || busy || !connected} onReset={()=>setPrepared('')} accountKey={`snooker-settings-${user.username}`}/>
-            <Calibration previewImage={frame.preview_camera==='top' ? frame.image : null} disabled={active} onApply={values=>{try{const current=JSON.parse(advanced);if(!current || Array.isArray(current) || typeof current!=='object')throw new Error('การตั้งค่าเพิ่มเติมต้องเป็น JSON object');setAdvanced(JSON.stringify({...current,...values},null,2));setPrepared('')}catch(e){setError(e.message)}}}/>
-          </>);
+import {CameraSetup} from '../components/CameraSetup';
+import {Calibration} from '../components/Calibration';
+import {M1Setup} from '../components/M1Setup';
+import {Button,Field,Table} from '../components/ui';
+import {TrialLayout} from '../components/TrialLayout';
+import {Guide} from '../components/Guide';
+import {labels} from '../lib/labels';
+import {isPrototypeCriteria} from '../lib/moduleSettings';
+
+export default function SetupPage(props) {
+  const {exercise,exerciseId,catalog,choose,criteria,criteriaId,setCriteriaId,setPage,config,setConfig,
+    advanced,setAdvanced,status,frame,active,busy,connected,prepared,fingerprint,run,checkReady,startSession,setPrepared,setError}=props;
+  const moduleId=exercise?.module_id;
+  if(moduleId===1)return <M1Setup {...props}/>;
+  const disabled=active || busy;
+  const cameras=moduleId===2 ? ['side','top'] : ['top'];
+  const selected=isPrototypeCriteria(criteria) ? criteria : null;
+  const plan=selected?.protocol || {required_valid_attempts:5,minimum_pass_rate:.8};
+  const rules=selected?.rules || (moduleId===2 ? {
+    cue_deviation_ratio:{max:.03},head_motion_ratio:{max:.03},bridge_motion_ratio:{max:.03},center_aim_ratio:{max:.03},follow_through_ratio:{min:.1},
+  } : {fraction_error:{max:.1}});
+  function apply(values) {
+    try {
+      const current=JSON.parse(advanced);
+      if(!current || Array.isArray(current) || typeof current!=='object')throw new Error('การตั้งค่าต้องเป็น JSON object');
+      setAdvanced(JSON.stringify({...current,...values},null,2));setPrepared('');
+    } catch(e){setError(e.message);}
+  }
+  return <>
+    <div className="heading"><h1>เตรียมฝึก M{moduleId}</h1><p>{moduleId===2 ? 'เลือกกล้อง มาร์กเกอร์ และจุดลูกขาว แล้วเริ่มฝึกแทงตรง' : 'เลือกเหลี่ยม กล้อง และสีลูก แล้วสอบเทียบโต๊ะ'}</p></div>
+    <section className="panel"><h2>อุปกรณ์และแบบฝึก</h2>
+      {moduleId===3 && <Field label="เหลี่ยมที่ต้องการฝึก"><select value={exerciseId} disabled={disabled} onChange={e=>choose(catalog.find(ex=>String(ex.id)===e.target.value))}>{catalog.filter(ex=>ex.module_id===3).map(ex=><option key={ex.id} value={ex.id}>{ex.name}</option>)}</select></Field>}
+      {moduleId===2 && <Field label="มือที่ถนัด"><select disabled={disabled} value={config.hand} onChange={e=>setConfig({...config,hand:e.target.value})}><option value="RIGHT">ขวา</option><option value="LEFT">ซ้าย</option></select></Field>}
+      {cameras.map(camera=><Field key={camera} label={camera==='side' ? 'หมายเลขกล้องด้านข้าง' : 'หมายเลขกล้องด้านบน'}><input disabled={disabled} value={config[`${camera}_source`]} onChange={e=>setConfig({...config,[`${camera}_source`]:e.target.value})}/></Field>)}
+      <p className="notice">{moduleId===2 ? 'ใช้สองกล้อง ติดมาร์กเกอร์สองสีบนคิว เลือกสีด้านปลาย/ท้ายคิวและศูนย์กลางลูกขาวจากภาพข้าง จากนั้นเลือกสีลูกขาวและสอบเทียบภาพบน ไม่ต้องมีลูกแดงหรือลงหลุม' : 'ใช้กล้องบนตัวเดียว เลือกสีลูกขาวและลูกแดงจากภาพจริง แล้วสอบเทียบพื้นที่เล่น'}</p>
+    </section>
+    <CameraSetup key={moduleId} moduleId={moduleId} cameras={cameras} config={config} setConfig={setConfig} advanced={advanced} onAdvanced={setAdvanced} status={status} disabled={disabled || !connected} onReset={()=>setPrepared('')}/>
+    <Calibration previewImage={frame.preview_camera==='top' ? frame.image : null} disabled={disabled} onApply={apply}/>
+    <section className="panel"><h2>เกณฑ์ M{moduleId}</h2>
+      <Field label="เกณฑ์ประเมิน"><select disabled={disabled} value={selected ? criteriaId : ''} onChange={e=>setCriteriaId(e.target.value)}><option value="">เกณฑ์ต้นแบบ — 5 ครั้ง ผ่านอย่างน้อย 4 ครั้ง</option>{exercise?.criteria.filter(isPrototypeCriteria).map(c=><option key={c.id} value={c.id}>รุ่น {c.version} — ยืนยันแล้ว</option>)}</select></Field>
+      <Table headings={['ตัวชี้วัด','ต่ำสุด','สูงสุด','หน่วย']}>
+        {Object.entries(rules).map(([key,rule])=><tr key={key}><td>{labels[key] || key}</td><td>{rule.min ?? '—'}</td><td>{rule.max ?? '—'}</td><td>{key.endsWith('_ratio') || key==='fraction_error' || key==='contact_fraction' ? 'สัดส่วน' : 'พิกเซล'}</td></tr>)}
+      </Table>
+      <p>ผ่านอย่างน้อย {Math.ceil(plan.required_valid_attempts*plan.minimum_pass_rate-1e-9)} จาก {plan.required_valid_attempts} ครั้งที่ประเมินได้ ข้อมูลไม่ครบไม่นับ {moduleId===3 ? 'ต้องผ่านครบเต็มใบ, 3/4, 1/2 และ 1/4 จึงครบ M3' : 'ต้องอยู่ในเกณฑ์ทั้งห้าข้อ ใช้ระยะเทียบระยะมาร์กเกอร์ในภาพ'}</p>
+      <p className="muted">เป็นเกณฑ์ต้นแบบ ไม่ใช่มาตรฐานสากลหรือการรับรองทักษะ</p>
+      <Button secondary disabled={disabled} onClick={()=>setPage('criteria')}>ดูหรือแก้ไขเกณฑ์</Button>
+    </section>
+    <section className="panel"><h2>ตรวจและเริ่มฝึก</h2>
+      <p>ระบบตั้ง LIVE การประเมิน และค่าประมวลผลให้แล้ว {moduleId===2 ? 'ช่วงฐานและความไวเริ่มเคลื่อนลูกใช้ค่าตั้งต้นให้โดยอัตโนมัติ ต้องตรวจการจับลูกนิ่งและลูกเคลื่อนก่อนเก็บผลจริง' : 'ขนาดพื้นที่เล่นมาตรฐานและรัศมีลูกเติมไว้แล้ว แต่ยังต้องเลือกจุดสอบเทียบจากภาพจริง'}</p>
+      {status.error && <p className="error">{status.error}</p>}
+      <div className="actions"><Button secondary disabled={disabled || !connected || !exercise} onClick={()=>run(checkReady)}>ตรวจความพร้อมและใช้เกณฑ์ต้นแบบ</Button><Button disabled={disabled || !connected || !status.ready || prepared!==fingerprint || !criteria} onClick={()=>run(startSession)}>เริ่มรอบฝึก</Button></div>
+      <p>{!connected ? 'กำลังเชื่อมต่อ Backend' : prepared!==fingerprint ? 'เตรียมอุปกรณ์แล้วกดตรวจความพร้อม' : status.ready ? 'พร้อมเริ่มรอบฝึก' : 'กำลังรอผลตรวจจับครบ'}</p>
+      {prepared===fingerprint && connected && !active && <div aria-live="polite">{frame.image && <img src={`data:image/jpeg;base64,${frame.image}`} alt="ภาพตรวจความพร้อม" style={{width:'100%'}}/>}{!status.ready && <ul>{(status.readiness_issues || []).map(issue=><li key={issue}>{issue}</li>)}</ul>}</div>}
+    </section>
+    <details className="panel"><summary>วิธีทำแบบฝึกและการจัดลูก</summary><Guide exercise={exercise}/><TrialLayout exercise={exercise} advanced={advanced}/></details>
+  </>;
 }

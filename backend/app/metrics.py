@@ -24,6 +24,7 @@ def line_distance(p, a, b):
 def stats(values):
     values = [v for v in values if v is not None and math.isfinite(v)]
     return {'n': len(values), 'mean': statistics.mean(values) if values else None,
+            'min': min(values) if values else None,
             'max': max(values) if values else None,
             'sd': statistics.stdev(values) if len(values) >= 2 else None}
 
@@ -32,7 +33,7 @@ def data_quality(samples,baseline_seconds):
     duration=max(0,samples[-1]['t']-samples[0]['t']) if len(samples)>1 else 0
     baseline=[s for s in samples if s['t']-samples[0]['t']<=baseline_seconds] if samples else []
     active=[s for s in samples if s['t']-samples[0]['t']>baseline_seconds] if samples else []
-    keys=['elbow','torso','stance','head','bridge','cue']
+    keys=['elbow','head','bridge','cue','knee_shooting']
     return {'samples':len(samples),'duration_s':duration,
             'effective_capture_fps':(len(samples)-1)/duration if duration else None,
             'baseline_samples':len(baseline),'active_samples':len(active),
@@ -44,24 +45,16 @@ def data_quality(samples,baseline_seconds):
             'processing_ms':stats([s.get('processing_ms') for s in samples])}
 
 
-def fraction_estimate(previous_cue, cue, target, radius):
-    """Projected overlap fraction, not a measurement of actual surface contact.
-
-    Assumes equal radii, straight incoming motion, stationary target, planar
-    calibrated centres. Call only for a detected contact candidate.
-    """
-    if radius <= 0 or distance(previous_cue, cue) < 1e-9:
-        return None
-    d = line_distance(target, previous_cue, cue)
-    return max(0., min(1., 1 - d/(2*radius)))
-
-
-def evaluate(measurements, definition):
+def evaluate(measurements, definition, active_duration_seconds=None):
     if not definition.get('approved'):
         return 'INVALID', 'ยังไม่มีเกณฑ์ที่ผู้จัดทำยืนยัน ใช้ดูค่าการวัดเท่านั้น'
     rules = definition.get('rules', {})
     if not rules:
         return 'INVALID', 'ไม่มีกฎตัดสินผล'
+    minimum = definition.get('minimum_active_seconds')
+    if minimum is not None and (active_duration_seconds is None or
+            not math.isfinite(active_duration_seconds) or active_duration_seconds < minimum):
+        return 'INVALID', f'ช่วงวัดหลังเก็บฐานต้องยาวอย่างน้อย {minimum:g} วินาที กรุณาบันทึกให้นานขึ้น'
     missing = [key for key in rules if measurements.get(key) is None]
     if missing:
         return 'INVALID', 'ข้อมูลไม่ครบ: ' + ', '.join(missing)
@@ -85,12 +78,12 @@ def summarize(samples, baseline_seconds=1., min_valid=5, min_ratio=.7):
     start = samples[0]['t']
     baseline = [s for s in samples if s['t']-start <= baseline_seconds]
     active = [s for s in samples if s['t']-start > baseline_seconds]
-    for key, unit in [('elbow','degree'), ('torso','degree'), ('stance','pixel')]:
+    for key in ['elbow','knee_shooting']:
         x = [s.get(key) for s in active]
         good = [v for v in x if v is not None]
         valid = len(good) >= min_valid and len(good)/max(1,len(x)) >= min_ratio
         summary = stats(good)
-        for part in ['mean','max','sd']:
+        for part in ['mean','min','max','sd']:
             values[f'{key}_{part}'] = summary[part] if valid else None
     for key in ['head', 'bridge']:
         base = [s[key] for s in baseline if s.get(key) is not None]

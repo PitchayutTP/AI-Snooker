@@ -2,8 +2,11 @@
 import math
 import time
 from pathlib import Path
-from .metrics import angle, distance, line_distance, fraction_estimate
+from .metrics import distance, line_distance
 from .cameras import open_camera, encode_image
+from .pose import measure_pose
+from .smoothing import LandmarkAverage
+from .elbow_preview import ElbowPreview
 
 
 class DemoSource:
@@ -12,7 +15,7 @@ class DemoSource:
         self.i+=1; stamp=time.monotonic(); offset=2*math.sin(self.i/10)
         # Simulated data are explicitly labelled DEMO and never used as LIVE evidence.
         return {'t':stamp,'elbow':90+offset,'head':[320+offset,180],'bridge':[450+offset,340],
-                'torso':40.,'stance':150.,'cue':[[100+offset,100],[40+offset,100]],
+                'knee_shooting':170.,'cue':[[100+offset,100],[40+offset,100]],
                 'balls':[],'source':'DEMO','image':None,'error':None,
                 'capture_ms':0.,'processing_ms':0.,'ready':True}
     def close(self): pass
@@ -23,6 +26,12 @@ class LiveSource:
         import cv2
         self.cv2=cv2
         self.config=config
+        self.elbow_preview=ElbowPreview()
+        self.pose_overlay=LandmarkAverage(config.get('smoothing_window',1) if config['exercise_id']==1 else 1,
+                                         config.get('smoothing_max_gap_s',.25) if config['exercise_id']==1 else config.get('max_frame_gap_s',.25),
+                                         config.get('smoothing_method','MEAN') if config['exercise_id']==1 else 'MEAN',
+                                         config.get('smoothing_tau_seconds',.35),
+                                         display_deadband=1.5 if config['exercise_id']==1 else 0)
         self.caps={}; self.pose=None; self.yolo=None; self.colour=None
         try:
             for name in config['required']:
@@ -68,9 +77,10 @@ class LiveSource:
         import numpy as np
         start=time.monotonic()
         sample={'t':start,'capture_epoch_ms':time.time()*1000,'source':'LIVE','image':None,'balls':[],'cue':None,
-                'elbow':None,'head':None,'bridge':None,'torso':None,'stance':None,
+                'elbow':None,'head':None,'bridge':None,'knee_shooting':None,
                 'error':None,'ready':True}
         frames={}; times={}
+        pose_issues=[]
         # Grab all devices before decoding; timestamps describe receipt, not hardware sync.
         grabbed={name:cap.grab() for name,cap in self.caps.items()}
         for name,cap in self.caps.items():
@@ -96,25 +106,28 @@ class LiveSource:
             self.ts=max(self.ts+1,int(start*1000))
             res=self.pose.detect_for_video(self.mp.Image(image_format=self.mp.ImageFormat.SRGB,data=rgb),self.ts)
             if res.pose_landmarks:
-                points=res.pose_landmarks[0]; threshold=self.config['visibility']
-                def point(i):
-                    p=points[i]
-                    if not all(math.isfinite(x) for x in (p.x,p.y,p.visibility or 0,p.presence or 0)): return None
-                    if min(p.visibility or 0,p.presence or 0)<threshold: return None
-                    return [p.x*w,p.y*h]
-                right=self.config['hand']=='RIGHT'
-                shoulder,elbow,wrist=[point(i) for i in ([12,14,16] if right else [11,13,15])]
-                sample['elbow']=angle(shoulder,elbow,wrist) if all(p is not None for p in [shoulder,elbow,wrist]) else None
-                sample['head']=point(0)
-                sample['bridge']=point(15 if right else 16)
-                hip=point(24 if right else 23)
-                if shoulder and hip:
-                    sample['torso']=math.degrees(math.atan2(abs(shoulder[1]-hip[1]),abs(shoulder[0]-hip[0])))
-                left,rightfoot=point(27),point(28)
-                if left and rightfoot: sample['stance']=distance(left,rightfoot)
-                for i in [0,11,12,13,14,15,16,23,24,27,28]:
-                    p=point(i)
-                    if p: cv2.circle(frame,tuple(map(int,p)),5,(60,220,90),-1)
+                measured,visible,pose_issues=measure_pose(res.pose_landmarks[0],w,h,
+                    self.config['hand'],self.config['visibility'],self.config['exercise_id'])
+                sample.update(measured)
+                # Display only the joints used by this module, not the hidden far shoulder.
+                shown_points=self.pose_overlay.apply(visible,start)
+                if self.config['exercise_id']==1:
+                    arm=(12,14,16) if self.config['hand']=='RIGHT' else (11,13,15)
+                    for a,b in zip(arm,arm[1:]):
+                        if a in shown_points and b in shown_points:
+                            cv2.line(frame,tuple(round(v*16) for v in shown_points[a]),
+                                     tuple(round(v*16) for v in shown_points[b]),(255,190,40),2,cv2.LINE_AA,4)
+                for index,p in shown_points.items():
+                    xy=tuple(map(int,p))
+                    # Fractional pixel centres avoid a one-pixel jump from integer rounding.
+                    cv2.circle(frame,tuple(round(v*16) for v in p),80,(60,220,90),-1,cv2.LINE_AA,4)
+                    cv2.putText(frame,str(index),(xy[0]+6,xy[1]-6),cv2.FONT_HERSHEY_SIMPLEX,.4,(60,220,90),1)
+                if self.config['exercise_id']==1:
+                    sample['elbow_preview']=self.elbow_preview.render(frame,shown_points,self.config['hand'])
+            else:
+                self.pose_overlay.apply({},start)
+                pose_issues=['ยังตรวจไม่พบร่างกาย จัดกล้องให้เห็นแขนและขาฝั่งแทง'
+                    if self.config['exercise_id']==1 else 'ยังตรวจไม่พบร่างกาย จัดกล้องให้เห็นผู้ฝึกชัดเจน']
             # Optional explicit coloured markers: real detections, no inferred cue tip.
             hsv=cv2.cvtColor(frame,cv2.COLOR_BGR2HSV)
             marker_points=[]
@@ -175,21 +188,19 @@ class LiveSource:
             import base64
             sample['image']=base64.b64encode(jpeg).decode('ascii')
         if 'side' in frames:
-            sample['ready']=sample['elbow'] is not None and sample['head'] is not None and sample['bridge'] is not None
-            if self.config['exercise_id']==1: sample['ready']=sample['ready'] and sample['torso'] is not None and sample['stance'] is not None
-            if self.config['exercise_id']==2: sample['ready']=sample['ready'] and sample.get('cue') is not None
+            if self.config['exercise_id']==1:
+                sample['ready']=all(sample.get(key) is not None for key in ['elbow','knee_shooting'])
+            else:
+                sample['ready']=all(sample.get(key) is not None for key in ['elbow','head','bridge','cue'])
         if 'top' in frames:
             sample['ready']=sample['ready'] and all(
                 len([b for b in sample['balls'] if b['class']==name and b['id'] is not None])==1
                 for name in (['cue_ball','target_ball'] if self.config['exercise_id']>=3 else ['cue_ball']))
         issues=[]
         if 'side' in frames:
-            required=[('elbow','ไหล่ ศอก และข้อมือด้านถือคิว'),('head','ศีรษะ'),('bridge','ข้อมือด้านสะพานมือ')]
-            if self.config['exercise_id']==1:
-                required += [('torso','ไหล่และสะโพก'),('stance','ข้อเท้าทั้งสองข้าง')]
-            if self.config['exercise_id']==2:
-                required += [('cue','มาร์กเกอร์สีสองจุดบนคิว')]
-            issues += [f'ยังตรวจไม่พบ{label}ชัดเจน' for key,label in required if sample.get(key) is None]
+            issues += pose_issues
+            if self.config['exercise_id']==2 and sample.get('cue') is None:
+                issues.append('ยังตรวจไม่พบมาร์กเกอร์สีสองจุดบนคิวชัดเจน')
         if 'top' in frames:
             for role,label in [('cue_ball','ลูกขาว'),('target_ball','ลูกเป้า')]:
                 if role=='target_ball' and self.config['exercise_id']==2: continue
@@ -211,64 +222,31 @@ class LiveSource:
 
 
 def ball_metrics(samples, config, setup):
-    """Experimental discrete contact/rail candidates. Must be validated with labels.
+    """M3 contact measurements; M1/M2 do not evaluate ball contact.
     Reject gaps, missing IDs, ambiguity and ID switches instead of joining traces.
     """
     if 'fraction' in setup:
         from .contact import contact_metrics
         return contact_metrics(samples,config,setup)
-    result={'contact_fraction':None,'fraction_error':None,'escape_success':None}
-    events=[]; previous=None; previous_t=None; track_ids=None; rail=None; hit=False
-    radius=config.get('ball_radius',0)
-    table=config.get('table_size',[])
-    if not radius or len(table)!=2: return result,events
-    for sample_index,sample in enumerate(samples):
-        cue=[b for b in sample.get('balls',[]) if b['class']=='cue_ball']
-        target=[b for b in sample.get('balls',[]) if b['class']=='target_ball']
-        if len(cue)!=1 or len(target)!=1 or cue[0]['id'] is None or target[0]['id'] is None:
-            return result,[{'type':'INVALID','reason':'missing or ambiguous ball/track'}]
-        ids=(cue[0]['id'],target[0]['id'])
-        if track_ids is not None and ids!=track_ids:
-            return result,[{'type':'INVALID','reason':'track ID changed'}]
-        track_ids=ids
-        if 'pattern' in setup and len([b for b in sample.get('balls',[]) if b['class']=='obstacle_ball' and b['id'] is not None])!=config.get('expected_obstacles',0):
-            return result,[{'type':'INVALID','reason':'missing obstacle detections'}]
-        c=cue[0]['xy']; t=target[0]['xy']
-        if previous_t is not None and sample['t']-previous_t>config['max_frame_gap_s']:
-            return result,[{'type':'INVALID','reason':'frame gap'}]
-        if any(distance(c,b['xy'])<=2*radius+config['contact_tolerance'] for b in sample.get('balls',[]) if b['class']=='obstacle_ball'):
-            events.append({'type':'OBSTACLE','t':sample['t']})
-            hit=True
-        edges={'left':c[0],'right':table[0]-c[0],'top':c[1],'bottom':table[1]-c[1]}
-        if previous and rail is None:
-            for edge,d in edges.items():
-                if d<=radius+config['rail_tolerance']:
-                    # Candidate needs subsequent direction reversal to count as a rail.
-                    events.append({'type':'RAIL_CANDIDATE','edge':edge,'t':sample['t']})
-                    rail=edge
-        if previous and distance(c,t)<=2*radius+config['contact_tolerance']:
-            value=fraction_estimate(previous,c,t,radius)
-            result['contact_fraction']=value
-            if value is not None and 'fraction' in setup:
-                result['fraction_error']=abs(value-setup['fraction'])
-            events.append({'type':'CONTACT_CANDIDATE','t':sample['t']})
-            # Escape classification intentionally unavailable until directional reversal
-            # is validated; exposed below only with sufficient geometric evidence.
-            required=config.get('escape_rail')
-            if required and rail:
-                candidates=[i for i,s in enumerate(samples[:sample_index+1]) if any(b['class']=='cue_ball' and
-                    ({'left':b['xy'][0],'right':table[0]-b['xy'][0],'top':b['xy'][1],'bottom':table[1]-b['xy'][1]}[rail]
-                     <=radius+config['rail_tolerance']) for b in s.get('balls',[]))]
-                idx=candidates[0] if candidates else 0
-                axis=0 if rail in ['left','right'] else 1
-                if 0<idx<sample_index:
-                    def cp(j): return next(b['xy'][axis] for b in samples[j]['balls'] if b['class']=='cue_ball')
-                    reversed_direction=(cp(idx)-cp(idx-1))*(cp(idx+1)-cp(idx))<0
-                    if reversed_direction:
-                        result['escape_success']=float(rail==required and not hit)
-            return result,events
-        previous=c; previous_t=sample['t']
-    return result,events
+    return {},[]
+
+
+def delivery_ratios(samples, baseline_seconds, measured, config):
+    """Dimensionless image ratios to baseline cue-marker span; not metric distances."""
+    import statistics
+    keys={'cue_deviation_ratio':'cue_deviation_max','head_motion_ratio':'head_max',
+          'bridge_motion_ratio':'bridge_max','center_aim_ratio':'center_aim_error',
+          'follow_through_ratio':'follow_through'}
+    result={key:None for key in keys}
+    if not samples:return result
+    base=[s['cue'] for s in samples if s.get('cue') and s['t']-samples[0]['t']<=baseline_seconds]
+    spans=[distance(*cue) for cue in base]
+    if len(spans)<config.get('min_valid_frames',5) or any(not math.isfinite(v) or v<=1e-9 for v in spans):return result
+    span=statistics.mean(spans)
+    for key,raw in keys.items():
+        value=measured.get(raw)
+        if value is not None and math.isfinite(value):result[key]=value/span
+    return result
 
 
 def cue_metrics(samples, baseline_seconds, config=None):

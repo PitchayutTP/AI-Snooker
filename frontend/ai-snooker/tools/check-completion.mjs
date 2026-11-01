@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {moduleCompletion} from '../src/lib/moduleCompletion.js';
+const catalog=[1,2,3,4].map(id=>({id,module_id:3}));
+const rows=catalog.map(ex=>({exercise_id:ex.id,latest_assessment_status:'PASS',completion_signature:'same'}));
+assert.equal(moduleCompletion(3,rows,catalog).status,'PASS');
+assert.equal(moduleCompletion(3,rows.slice(0,3),catalog).status,'INCOMPLETE');
+assert.equal(moduleCompletion(3,[...rows.slice(0,3),{...rows[3],latest_assessment_status:'FAIL'}],catalog).status,'INCOMPLETE');
+assert.equal(moduleCompletion(3,[...rows.slice(0,3),{...rows[3],completion_signature:'different'}],catalog).status,'DIFFERENT_SETTINGS');
+assert.equal(moduleCompletion(3,rows.map(row=>({...row,completion_signature:null})),catalog).status,'DIFFERENT_SETTINGS');
+assert.equal(moduleCompletion(1,[],catalog).status,'INCOMPLETE');
+console.log('Module completion checks passed: all four, missing, failed, mismatched settings, missing signature');

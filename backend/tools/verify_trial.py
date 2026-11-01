@@ -12,7 +12,7 @@ BACKEND=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(BACKEND))
 from app.contact import contact_metrics
 from app.colour import ColourTracker
-from app.vision import cue_metrics
+from app.vision import cue_metrics,ball_metrics
 
 
 class GeometryChecks(unittest.TestCase):
@@ -24,7 +24,11 @@ class GeometryChecks(unittest.TestCase):
             for i,x in enumerate([-30,-20,-10,0,10,20])]
 
     def measure(self,trace,fraction=1):
-        return contact_metrics(trace,{'ball_radius':5,'max_frame_gap_s':.25,'contact_tolerance':0},{'fraction':fraction})
+        return ball_metrics(trace,{'ball_radius':5,'max_frame_gap_s':.25,'contact_tolerance':0},{'fraction':fraction})
+
+    def test_m2_does_not_require_a_target_ball_or_evaluate_contact(self):
+        rows=[{'t':0,'balls':[{'id':1,'class':'cue_ball','xy':[0,0]}]}]
+        self.assertEqual(ball_metrics(rows,{'ball_radius':5,'table_size':[3569,1778]},{}),({},[]))
 
     def test_four_fractions(self):
         for f in [1,.75,.5,.25]:
@@ -58,7 +62,7 @@ class GeometryChecks(unittest.TestCase):
         self.assertFalse(preview['ready'])
         self.assertTrue(preview['preview_only'])
         self.assertEqual(preview['image_size'],[320,240])
-        fake=Mock();fake.read.side_effect=lambda:{'t':time.monotonic(),'image':'jpeg','images':{'side':'jpeg'},'ready':True}
+        fake=Mock();fake.read.side_effect=lambda:{'t':time.monotonic(),'image':'jpeg','images':{'side':'jpeg'},'elbow_preview':{'image':'jpeg'},'ready':True}
         runtime=Runtime()
         with patch('app.runtime.LiveSource',return_value=fake):
             try:
@@ -68,7 +72,7 @@ class GeometryChecks(unittest.TestCase):
                     time.sleep(.01)
             finally:runtime.stop()
         self.assertGreaterEqual(len(runtime.samples),3)
-        self.assertTrue(all('image' not in row and 'images' not in row for row in runtime.samples))
+        self.assertTrue(all('image' not in row and 'images' not in row and 'elbow_preview' not in row for row in runtime.samples))
 
     def test_missing_and_switched_ids_and_gap(self):
         for kind in ['missing','switch','gap']:

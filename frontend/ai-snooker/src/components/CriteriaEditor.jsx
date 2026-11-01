@@ -9,7 +9,24 @@ export function CriteriaEditor({ exercise, units, disabled, onSaved }) {
     [saving, setSaving] = useState(false);
   const [useProtocol,setUseProtocol]=useState(false);
   const [protocol,setProtocol]=useState({required_valid_attempts:'',minimum_pass_percent:'',rationale:''});
+  const [minimumSeconds, setMinimumSeconds] = useState('');
+  const [scope,setScope]=useState('REPORT'),[templateVersion,setTemplateVersion]=useState(null);
   const options = exercise?.lesson?.metrics || [];
+  async function loadTemplate() {
+    setSaving(true);
+    setError('');
+    try {
+      const template = await api(`/exercises/${exercise.id}/criteria-template`);
+      setRows(Object.entries(template.rules).map(([code, rule]) => ({code, min:rule.min ?? '', max:rule.max ?? ''})));
+      setSource(template.source);
+      setScope(template.validation_scope || 'REPORT');setTemplateVersion(template.template_version || null);
+      setApproved(false);
+      setMinimumSeconds(String(template.minimum_active_seconds));
+      setUseProtocol(true);
+      setProtocol({required_valid_attempts:String(template.protocol.required_valid_attempts), minimum_pass_percent:String(template.protocol.minimum_pass_rate*100), rationale:template.protocol.rationale});
+    } catch (e) { setError(e.message); }
+    finally { setSaving(false); }
+  }
   function update(index, key, value) {
     setRows(
       rows.map((row, i) => (i === index ? { ...row, [key]: value } : row)),
@@ -55,11 +72,14 @@ export function CriteriaEditor({ exercise, units, disabled, onSaved }) {
         approved,
         rules,
         protocol:plan,
+        validation_scope:scope,template_version:templateVersion,
+        minimum_active_seconds:minimumSeconds === '' ? null : Number(minimumSeconds),
       });
       await onSaved(result.id);
       setRows([]);
       setApproved(false);
       setSource("");
+      setMinimumSeconds('');
     } catch (e) {
       setError(e.message);
     } finally {
@@ -76,6 +96,15 @@ export function CriteriaEditor({ exercise, units, disabled, onSaved }) {
       </p>
       <form onSubmit={submit}>
         <fieldset disabled={disabled || saving}>
+          {exercise?.module_id === 1 && <div className="notice">
+            <p>เกณฑ์ตั้งต้น M1 อัตโนมัติ 8 วินาที: ศอก 80–100° เข่าฝั่งแทง 160–180° กรองมุม Median 15 เฟรม + EMA 0.8 วินาที ตรวจต่ำสุดและสูงสุดหลังฐานอย่างน้อย 7 วินาที ประเมินหนึ่งครั้ง N=1 อัตราผ่าน 100% ทดลองเฉพาะศอกและขา ไม่ใช้ SD ตัดสิน</p>
+            <p>เป็นมุมฉายในภาพและค่าทดสอบนำร่องที่ผู้จัดทำเลือก ไม่ใช่ค่าสากล ไม่ประเมินการก้มหรือคางกับคิว ปรับจากผลนำร่องก่อนใช้สรุปวิจัย</p>
+            <button type="button" className="button secondary" onClick={loadTemplate}>เติมเกณฑ์ตั้งต้น M1 พร้อมแผนจบรอบ</button>
+          </div>}
+          {(exercise?.module_id===2 || exercise?.module_id===3) && <div className="notice"><p>มีเกณฑ์ต้นแบบพร้อมแผน 5 ครั้ง ผ่านอย่างน้อย 4 ครั้ง ค่าตัวเลขต้องตรวจความเหมาะสมจากการนำร่อง ไม่ใช่ค่าสากล</p><button type="button" className="button secondary" onClick={loadTemplate}>เติมเกณฑ์ตั้งต้น M{exercise.module_id} พร้อมแผนจบรอบ</button></div>}
+          <label className="field">เวลาวัดขั้นต่ำหลังช่วงฐาน (วินาที; เว้นว่างหากไม่กำหนด)
+            <input type="number" min="0.1" max="600" step="any" value={minimumSeconds} onChange={e=>setMinimumSeconds(e.target.value)}/>
+          </label>
           <label className="field">
             <span>แหล่งที่มา / บันทึกการนำร่อง</span>
             <textarea

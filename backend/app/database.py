@@ -92,12 +92,13 @@ class Measurement(Base):
     invalid_reason: Mapped[str | None] = mapped_column(String(500))
 
 
-METRICS = {**{f'{k}_{s}': ('degree' if k in ['elbow','torso'] else 'pixel')
-              for k in ['elbow','torso','stance'] for s in ['mean','max','sd']},
+METRICS = {**{f'{k}_{s}': ('pixel' if k=='stance' else 'degree')
+              for k in ['elbow','torso','stance','knee_shooting','knee_support'] for s in ['mean','min','max','sd']},
            **{f'{k}_{s}':'pixel' for k in ['head','bridge'] for s in ['mean','max']},
            'cue_deviation_mean':'pixel', 'cue_deviation_max':'pixel',
            'follow_through':'pixel', 'center_aim_error':'pixel',
-           'contact_fraction':'ratio', 'fraction_error':'ratio', 'escape_success':'boolean'}
+           'contact_fraction':'ratio', 'fraction_error':'ratio', 'escape_success':'boolean',
+           **{key:'ratio' for key in ['cue_deviation_ratio','head_motion_ratio','bridge_motion_ratio','center_aim_ratio','follow_through_ratio']}}
 
 
 def init_db():

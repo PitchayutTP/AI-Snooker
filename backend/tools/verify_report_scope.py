@@ -13,12 +13,112 @@ BACKEND=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(BACKEND))
 from app.protocol import protocol_result,assessment_problem
 from app.smoothing import MovingAverage
-from app.metrics import data_quality
+from app.metrics import data_quality,evaluate
+from app.criteria_templates import m1_timed_template,training_template
 from tools.evaluate_trial import detection_report,tracking_report,measurement_report
 from tools.prepare_dataset import prepare
 
 
 class ReportScopeChecks(unittest.TestCase):
+    def test_m2_complete_normalized_criteria(self):
+        from app.vision import delivery_ratios
+        definition=training_template(2);definition['approved']=True
+        samples=[{'t':i*.1,'cue':[[100,50],[0,50]]} for i in range(11)]
+        raw={'cue_deviation_max':3,'head_max':3,'bridge_max':3,'center_aim_error':3,'follow_through':10}
+        ratios=delivery_ratios(samples,1,raw,{})
+        self.assertEqual(evaluate(ratios,definition,1)[0],'PASS')
+        scaled=[{**s,'cue':[[x*2,y*2] for x,y in s['cue']]} for s in samples]
+        self.assertEqual(ratios,delivery_ratios(scaled,1,{k:v*2 for k,v in raw.items()},{}))
+        self.assertEqual(evaluate({**ratios,'follow_through_ratio':.09},definition,1)[0],'FAIL')
+        self.assertEqual(evaluate({**ratios,'center_aim_ratio':None},definition,1)[0],'INVALID')
+        self.assertTrue(all(value is None for value in delivery_ratios([],1,raw,{}).values()))
+        config={'mode':'LIVE','purpose':'ASSESSMENT','required':['side','top'],'ball_detector':'HSV','calibration_image_size':[1280,720],'delivery_ball_timing':True,'side_ball_center':[100,50]}
+        self.assertIsNone(assessment_problem(definition,config))
+        self.assertIsNotNone(assessment_problem(definition,{**config,'delivery_ball_timing':False}))
+        self.assertIsNotNone(assessment_problem(definition,{**config,'side_ball_center':None}))
+        self.assertIsNotNone(assessment_problem({**definition,'validation_scope':'REPORT'},config))
+        self.assertEqual(protocol_result({'PASS':4,'FAIL':1,'INVALID':10},definition,config,'COMPLETED')['status'],'PASS')
+        self.assertEqual(protocol_result({'PASS':3,'FAIL':2},definition,config,'COMPLETED')['status'],'FAIL')
+
+    def test_m3_fraction_thresholds_and_prototype_scope(self):
+        for fraction in [1.,.75,.5,.25]:
+            definition=training_template(3,fraction);definition['approved']=True
+            self.assertEqual(evaluate({'fraction_error':.1},definition,1)[0],'PASS')
+            self.assertEqual(evaluate({'fraction_error':.1001},definition,1)[0],'FAIL')
+            self.assertEqual(evaluate({'fraction_error':None},definition,1)[0],'INVALID')
+            config={'mode':'LIVE','required':['top'],'ball_detector':'HSV','calibration_image_size':[1280,720]}
+            self.assertIsNone(assessment_problem(definition,config))
+            self.assertIsNotNone(assessment_problem(definition,{**config,'calibration_image_size':[]}))
+
+    def test_completion_signatures_and_latest_result(self):
+        from app.completion import latest_assessment,completion_signature
+        base={'exercise_id':3,'status':'COMPLETED','mode':'LIVE','started_at':'2026-01-01',
+              'criteria':training_template(3,1.),'config':{'exercise_id':3,'ball_detector':'HSV','table_size':[3569,1778]},
+              'protocol_result':{'purpose':'ASSESSMENT','status':'PASS'}}
+        other=deepcopy(base);other['exercise_id']=4;other['config']['exercise_id']=4;other['criteria']['source']='different fraction'
+        self.assertEqual(completion_signature(base),completion_signature(other))
+        other['config']['ball_detector']='YOLO'
+        self.assertNotEqual(completion_signature(base),completion_signature(other))
+        failed=deepcopy(base);failed['started_at']='2026-01-02';failed['protocol_result']['status']='FAIL'
+        self.assertEqual(latest_assessment([failed,base])['latest_assessment_status'],'FAIL')
+        failed['status']='ABORTED'
+        self.assertEqual(latest_assessment([failed,base])['latest_assessment_status'],'PASS')
+
+    def test_timed_m1_template(self):
+        definition=m1_timed_template();definition['approved']=True
+        values={'elbow_min':80,'elbow_max':100,'knee_shooting_min':160,'knee_shooting_max':180}
+        self.assertEqual(evaluate(values,definition,6.99)[0],'INVALID')
+        self.assertEqual(evaluate(values,definition,7)[0],'PASS')
+        self.assertNotIn('elbow_sd',definition['rules'])
+        self.assertNotIn('torso_min',definition['rules'])
+        self.assertNotIn('torso_max',definition['rules'])
+        self.assertNotIn('knee_support_min',definition['rules'])
+        self.assertNotIn('knee_support_max',definition['rules'])
+        for key in values:
+            bad=values[key] + (-.01 if key.endswith('_min') else .01)
+            self.assertEqual(evaluate({**values,key:bad},definition,7)[0],'FAIL',key)
+            self.assertEqual(evaluate({**values,key:None},definition,7)[0],'INVALID',key)
+        config={'mode':'LIVE','m1_auto_seconds':8,'baseline_seconds':1,'smoothing_window':15,'smoothing_method':'MEDIAN_EMA','smoothing_tau_seconds':.8,'smoothing_max_gap_s':.75,'smoothing_for_evaluation':True}
+        self.assertIsNone(assessment_problem(definition,config))
+        self.assertIsNotNone(assessment_problem(definition,{**config,'smoothing_for_evaluation':False}))
+        self.assertIsNotNone(assessment_problem(definition,{**config,'smoothing_method':'MEAN'}))
+        self.assertIsNotNone(assessment_problem(definition,{**config,'smoothing_max_gap_s':.25}))
+        self.assertIsNotNone(assessment_problem(definition,{**config,'m1_auto_seconds':15}))
+        config={'mode':'LIVE','purpose':'ASSESSMENT'}
+        self.assertEqual(protocol_result({'PASS':1},definition,config,'COMPLETED')['status'],'PASS')
+        self.assertEqual(protocol_result({'FAIL':1},definition,config,'COMPLETED')['status'],'FAIL')
+
+    def test_runtime_stops_timed_m1_without_frontend(self):
+        from app.runtime import Runtime
+        class Source:
+            def __init__(self,config): self.t=-1
+            def read(self):
+                self.t+=1
+                return {'t':self.t,'source':'LIVE','ready':True,'error':'test end' if self.t==20 else None}
+            def close(self): pass
+        instance=Runtime()
+        with patch('app.runtime.LiveSource',Source):
+            # Hold the lock until the attempt is armed so the first sample is recorded.
+            with instance.lock:
+                instance.start({'mode':'LIVE','m1_auto_seconds':8})
+                instance.begin('test-attempt')
+            instance.thread.join(timeout=3)
+        self.assertFalse(instance.thread.is_alive())
+        self.assertEqual(len(instance.samples),9)
+        self.assertEqual(instance.samples[-1]['t']-instance.samples[0]['t'],8)
+        self.assertFalse(instance.collecting)
+        self.assertTrue(instance.recording_limit_reached)
+        self.assertEqual(instance.snapshot()['attempt_elapsed_s'],8)
+        instance.stop()
+
+    def test_retired_m1_criteria_are_not_available_for_new_training(self):
+        for version in ['m1-stability-v1','m1-posture-v2','m1-elbow-legs-8s-v9']:
+            old={'approved':True,'template_version':version,'rules':{'elbow_sd':{'max':5}},
+                 'protocol':{'required_valid_attempts':1,'minimum_pass_rate':1}}
+            self.assertIsNotNone(assessment_problem(old,{'mode':'LIVE'}))
+            # Completed history uses its saved definition, without reopening training.
+            self.assertEqual(protocol_result({'PASS':1},old,{'mode':'LIVE','purpose':'ASSESSMENT'},'COMPLETED')['status'],'PASS')
+
     def definition(self):
         return {'approved':True,'rules':{'elbow_mean':{'min':80,'max':100}},
                 'protocol':{'required_valid_attempts':4,'minimum_pass_rate':.75,'rationale':'unit test only'}}

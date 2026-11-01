@@ -16,7 +16,7 @@ def model_path(value):
 
 def inspect_model(value):
     path=model_path(value)
-    if not path.is_file(): return {'available':False,'path':value,'message':'ยังไม่มีโมเดลที่ฝึกแล้ว ดูขั้นตอนใน MODEL-TRAINING.md'}
+    if not path.is_file(): return {'available':False,'path':value,'message':'ยังไม่พบไฟล์โมเดลลูกที่ฝึกแล้วในตำแหน่งนี้'}
     from ultralytics import YOLO
     model=YOLO(str(path))
     if model.task!='detect': raise ValueError('ต้องใช้โมเดล object detection')

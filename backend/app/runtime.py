@@ -16,12 +16,17 @@ class Runtime:
         self.config={}; self.error=None; self.session_id=None; self.attempt_id=None
         self.smoother=None
         self.recorder=None
+        self.recording_limit_reached=False
 
     def start(self, config):
         self.stop()
         source=PreviewSource(config) if config.get('preview_only') else DemoSource(config) if config['mode']=='DEMO' else LiveSource(config)
         self.stop_event.clear(); self.config=config; self.error=None; self.latest=None
-        smoother=MovingAverage(config.get('smoothing_window',1),config.get('max_frame_gap_s',.25))
+        m1=config.get('exercise_id')==1 and config.get('mode')=='LIVE' and not config.get('preview_only')
+        smoothing_gap=config.get('smoothing_max_gap_s',.25) if m1 else config.get('max_frame_gap_s',.25)
+        smoother=MovingAverage(config.get('smoothing_window',1),smoothing_gap,
+                               config.get('smoothing_method','MEAN'),config.get('smoothing_tau_seconds',.35),
+                               display_deadband=.25 if m1 else 0)
         self.smoother=smoother
         def worker():
             try:
@@ -44,10 +49,13 @@ class Runtime:
                                 self.error='จำนวนเฟรมเกินขีดจำกัด กรุณาจบครั้งหรือยกเลิก'
                                 self.collecting=False
                             else:
-                                record={k:v for k,v in sample.items() if k not in ('image','images')}
+                                record={k:v for k,v in sample.items() if k not in ('image','images','elbow_preview')}
                                 if not config.get('smoothing_for_evaluation',False):
                                     record.update(sample.get('raw_measurements',{}))
                                 self.samples.append(record)
+                                if self.config.get('m1_auto_seconds') and self.samples[-1]['t']-self.samples[0]['t']>=self.config['m1_auto_seconds']:
+                                    self.recording_limit_reached=True
+                                    self.collecting=False
                     if sample.get('error'):
                         self.error=sample.get('error'); break
                     self.stop_event.wait(.1 if config.get('preview_only') else .05 if config['mode']=='DEMO' else .001)
@@ -64,7 +72,7 @@ class Runtime:
             issues=list(frame.get('readiness_issues',[]))
             if not fresh:
                 issues=[self.error or ('ภาพจากกล้องไม่อัปเดต กรุณาตรวจความพร้อมอีกครั้ง' if frame else 'กำลังรอภาพจากกล้อง')]
-                frame={k:None for k in ['elbow','head','bridge','torso','stance','image']}
+                frame={k:None for k in ['elbow','head','bridge','knee_shooting','image']}
             live={}
             if fresh and self.samples:
                 baseline=[s.get('display_measurements',s) for s in self.samples if s['t']-self.samples[0]['t']<=self.config.get('baseline_seconds',1)]
@@ -85,12 +93,15 @@ class Runtime:
                     'readiness_issues':issues,
                     'error':self.error,'mode':self.config.get('mode'),'configuration':dict(self.config),
                     'session_id':self.session_id,'attempt_id':self.attempt_id,
+                    'attempt_elapsed_s':max(0,self.samples[-1]['t']-self.samples[0]['t']) if len(self.samples)>1 else 0,
+                    'recording_limit_reached':self.recording_limit_reached,
                     'samples':len(self.samples),'collecting':self.collecting}
 
     def begin(self, attempt_id):
         with self.lock:
             if self.smoother: self.smoother.reset()
             self.samples=[]; self.attempt_id=attempt_id; self.collecting=True
+            self.recording_limit_reached=False
             self.recorder=None
             if self.config.get('record_frames') and self.config.get('mode')=='LIVE':
                 try:self.recorder=FrameRecorder(self.owner_profile_id,self.session_id,attempt_id)

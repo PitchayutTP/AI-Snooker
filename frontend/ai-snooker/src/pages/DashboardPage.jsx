@@ -1,6 +1,6 @@
 import { Button } from "../components/ui";
 import { Progress } from "../components/Progress";
-export default function DashboardPage({ loaded, busy, run, load, progress, catalog, choose, active }) {
+export default function DashboardPage({ loaded, busy, run, load, progress, catalog, choose, active,setPage }) {
   return (<>
             <div className="heading">
               <p className="eyebrow">YOUR PRACTICE SPACE</p>
@@ -44,6 +44,10 @@ export default function DashboardPage({ loaded, busy, run, load, progress, catal
                   );
                 },
               )}
+              <article className="module">
+                <div className="module-art"><span>04</span><div className="ball"/></div>
+                <div className="module-body"><p className="eyebrow">MODULE 04 · หน้าตัวอย่าง</p><h2>การแก้สนุกพื้นฐาน</h2><p className="muted">แก้สนุกหนึ่งชิ่ง 3 รูปแบบ · ยังไม่เปิดฝึกหรือบันทึกผล</p><Button secondary disabled={busy} onClick={()=>setPage('m4-preview')}>ดูหน้าตัวอย่าง M4 →</Button></div>
+              </article>
             </div>
           </>);
 }

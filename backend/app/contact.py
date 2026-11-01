@@ -8,7 +8,7 @@ from .metrics import distance, line_distance
 
 
 def contact_metrics(samples, config, setup):
-    result = {'contact_fraction':None,'fraction_error':None,'escape_success':None}
+    result = {'contact_fraction':None,'fraction_error':None}
     radius = config.get('ball_radius',0)
     if not radius or not samples:
         return result, [{'type':'INVALID','reason':'no calibrated ball radius or samples'}]

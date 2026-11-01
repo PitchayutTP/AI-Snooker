@@ -1,4 +1,5 @@
 export function TrialLayout({ exercise,advanced }) {
+  if(exercise?.module_id===2)return <section className="panel"><h2>แบบฝึก M2: แทงตรงกึ่งกลางลูกขาว</h2><ol><li>ใช้ลูกขาวหนึ่งลูกในตำแหน่งเดิม ไม่มีลูกแดงหรือเงื่อนไขลงหลุม</li><li>เริ่มบันทึก นิ่งช่วงฐาน 1 วินาที แล้วแทงกึ่งกลางลูกโดยไม่ตั้งใจใช้ไซด์</li><li>ส่งคิวตาม คงท่าชั่วครู่ให้เห็นหลังลูกเริ่มเคลื่อน แล้วจบการบันทึก</li><li>ทำจนได้ผล PASS/FAIL รวม 5 ครั้ง ผ่านอย่างน้อย 4 ครั้งแล้วจบรอบ</li></ol><p>มาร์กเกอร์สองจุดต้องอยู่ตำแหน่งเดิม ระยะในเกณฑ์คิดเป็นสัดส่วนต่อระยะมาร์กเกอร์ในภาพ ไม่ใช่ระยะจริงหรือมาตรฐานสากล</p></section>;
   if(exercise?.module_id!==3)return null;
   let settings;try{settings=JSON.parse(advanced)}catch{return null}
   const [w,h]=settings.table_size || [],r=settings.ball_radius;

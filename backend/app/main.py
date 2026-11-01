@@ -13,15 +13,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from .database import (DB, init_db, now, Module, Exercise, Criteria, TrainingSession,
                        Attempt, Measurement, MetricDefinition, METRICS)
 from .auth import router as auth_router, identity, COOKIE, ORIGINS
 from .runtime import runtime
 from .metrics import summarize, evaluate, stats, data_quality
-from .vision import ball_metrics, cue_metrics
+from .vision import ball_metrics, cue_metrics,delivery_ratios
 from .lessons import LESSONS, feedback
 from .protocol import protocol_result, assessment_problem
+from .completion import latest_assessment
+from .training_reset import recording_cleanup_plan,cleanup_recordings
+from .recordings import RECORDINGS
 
 
 @asynccontextmanager
@@ -90,6 +93,7 @@ def serialized(fn):
 
 
 class CaptureConfig(BaseModel):
+    m1_auto_seconds: Literal[0,8]=0
     mode: Literal['DEMO','LIVE']='DEMO'
     hand: Literal['LEFT','RIGHT']='RIGHT'
     side_source: str='0'
@@ -115,21 +119,21 @@ class CaptureConfig(BaseModel):
     visibility: float=Field(default=.7,ge=0,le=1,allow_inf_nan=False)
     baseline_seconds: float=Field(default=1.,ge=.5,le=10,allow_inf_nan=False)
     smoothing_window: int=Field(default=1,ge=1,le=31)
+    smoothing_method: Literal['MEAN','MEDIAN_EMA']='MEAN'
+    smoothing_tau_seconds: float=Field(default=.35,ge=.05,le=2,allow_inf_nan=False)
+    smoothing_max_gap_s: float=Field(default=.25,gt=0,le=2,allow_inf_nan=False)
     smoothing_for_evaluation: bool=False
     record_frames: bool=False
     min_valid_frames: int=Field(default=5,ge=2,le=1000)
     min_valid_ratio: float=Field(default=.7,gt=0,le=1,allow_inf_nan=False)
     sync_tolerance_ms: float=Field(default=100,gt=0,le=1000,allow_inf_nan=False)
     ball_confidence: float=Field(default=.5,gt=0,le=1,allow_inf_nan=False)
-    ball_roles: dict[str,Literal['cue_ball','target_ball','obstacle_ball']]=Field(default_factory=dict)
+    ball_roles: dict[str,Literal['cue_ball','target_ball']]=Field(default_factory=dict)
     homography: list[list[float]] | None=None
     table_size: list[float]=Field(default_factory=list)
     ball_radius: float=Field(default=0,ge=0,allow_inf_nan=False)
     contact_tolerance: float=Field(default=0,ge=0,allow_inf_nan=False)
-    rail_tolerance: float=Field(default=0,ge=0,allow_inf_nan=False)
     max_frame_gap_s: float=Field(default=.25,gt=0,le=5,allow_inf_nan=False)
-    escape_rail: Literal['left','right','top','bottom'] | None=None
-    expected_obstacles: int=Field(default=0,ge=0,le=10)
     delivery_ball_timing: bool=False
     motion_threshold: float=Field(default=0,ge=0,allow_inf_nan=False)
     side_ball_center: list[float] | None=None
@@ -211,10 +215,13 @@ class TrialProtocol(BaseModel):
 
 
 class CriteriaRequest(BaseModel):
+    validation_scope: Literal['REPORT','PROTOTYPE']='REPORT'
+    template_version: str | None=Field(default=None,min_length=1,max_length=60)
     source: str=Field(min_length=5,max_length=1000)
     approved: bool=False
     rules: dict[str,Rule]
     protocol: TrialProtocol | None=None
+    minimum_active_seconds: float | None=Field(default=None,gt=0,le=600,allow_inf_nan=False)
 
 
 def require(db, model, key):
@@ -258,6 +265,16 @@ def new_criteria(eid:int, body:CriteriaRequest):
         return {'id':c.id,'version':version}
 
 
+@app.get('/api/exercises/{eid}/criteria-template')
+def criteria_template(eid:int):
+    with DB() as db:
+        exercise=require(db,Exercise,eid)
+        module_id=exercise.module_id;fraction=exercise.setup_definition.get('fraction')
+    from .criteria_templates import training_template
+    try:return training_template(module_id,fraction)
+    except ValueError as exc:raise HTTPException(404,str(exc)) from exc
+
+
 @app.post('/api/readiness')
 @serialized
 def readiness(body:ReadyRequest, user=Depends(current_user)):
@@ -268,6 +285,8 @@ def readiness(body:ReadyRequest, user=Depends(current_user)):
         if exercise.module_id not in LESSONS: raise HTTPException(409,'prototype นี้ยังไม่เปิดแบบฝึกแก้สนุก')
         config=body.config.model_dump()
         required=exercise.setup_definition['requires']
+        if config['m1_auto_seconds'] and exercise.module_id!=1:
+            raise HTTPException(422,'การบันทึกอัตโนมัติใช้เฉพาะ M1')
         if config['delivery_ball_timing'] and exercise.module_id==2: required=['side','top']
         if config['mode']=='LIVE' and len(required)==2 and config['side_source']==config['top_source']:
             raise HTTPException(422,'กล้องด้านข้างและด้านบนต้องเป็นคนละอุปกรณ์')
@@ -291,8 +310,6 @@ def readiness(body:ReadyRequest, user=Depends(current_user)):
         if config['mode']=='LIVE' and 'top' in config['required']:
             if not config['homography'] or not config['table_size'] or not config['ball_radius']:
                 raise HTTPException(422,'กรุณาระบุ homography ขนาดโต๊ะ และรัศมีลูกในหน่วยเดียวกัน')
-            if exercise.module_id==4 and (not config['escape_rail'] or not config['setup_notes'] or not config['expected_obstacles']):
-                raise HTTPException(422,'ต้องระบุชิ่งและบันทึกแผนผังจัดลูกของรูปแบบนี้')
         try:
             runtime.stop()
             with runtime.lock:
@@ -369,18 +386,24 @@ def finish_attempt(aid:str,body:FinishRequest, user=Depends(current_user)):
             config=s.configuration_snapshot
             measured=summarize(samples,config['baseline_seconds'],config.get('min_valid_frames',5),config.get('min_valid_ratio',.7))
             measured.update(cue_metrics(samples,config['baseline_seconds'],config))
+            if exercise.module_id==2:measured.update(delivery_ratios(samples,config['baseline_seconds'],measured,config))
             balls,events=ball_metrics(samples,config,exercise.setup_definition)
             measured.update(balls)
             if body.aborted: status,reason='ABORTED','ผู้ฝึกยุติก่อนจบ'
             elif runtime.error: status,reason='INVALID',runtime.error
             elif config['mode']=='DEMO': status,reason='INVALID','ข้อมูลสาธิต ไม่ใช่ผลฝึกจริง'
-            else: status,reason=evaluate(measured,c.definition)
+            elif config.get('m1_auto_seconds') and (not samples or sum(bool(s.get('ready')) for s in samples)/len(samples)<config.get('min_valid_ratio',.7)):
+                status,reason='INVALID','จุดร่างกายครบไม่ถึงสัดส่วนขั้นต่ำ กรุณาจัดกล้องและทดลองใหม่'
+            else:
+                active_duration=max(0,samples[-1]['t']-samples[0]['t']-config['baseline_seconds']) if samples else 0
+                status,reason=evaluate(measured,c.definition,active_duration)
             a.result_status=status; a.result_reason=reason; a.ended_at=now()
             a.evidence={'samples':samples,'events':events,'source':config['mode'],
-                        'algorithm':'table-trial-m1-m3-v0.4','segmentation':'manual-start-stop',
+                        'algorithm':'table-trial-m1-m3-v0.4','segmentation':'ready-start-timed-stop' if config.get('m1_auto_seconds') else 'manual-start-stop',
                         'display_timing':body.display_timing.model_dump() if body.display_timing else None,
                         'quality':data_quality(samples,config['baseline_seconds'])}
             for metric in db.scalars(select(MetricDefinition)):
+                if metric.code not in LESSONS[exercise.module_id]['metrics']:continue
                 value=measured.get(metric.code)
                 if value is not None and not math.isfinite(value): value=None
                 db.add(Measurement(attempt_id=aid,metric_id=metric.id,value=value,
@@ -585,13 +608,55 @@ def progress(user=Depends(current_user)):
         output=[]
         for exercise in db.scalars(select(Exercise).where(Exercise.module_id<=3).order_by(Exercise.id)):
             sessions=[s for s in rows if s['exercise_id']==exercise.id and s['status']=='COMPLETED']
-            output.append({'exercise_id':exercise.id,'sessions':len(sessions),
+            output.append({'exercise_id':exercise.id,'module_id':exercise.module_id,'sessions':len(sessions),
+                **latest_assessment(sessions),
                 'attempts':sum(len(s['attempts']) for s in sessions),
                 'live_pass':sum(s['counts']['PASS'] for s in sessions if s['mode']=='LIVE'),
                 'assessments_completed':sum(s['protocol_result']['purpose']=='ASSESSMENT' for s in sessions),
                 'assessments_passed':sum(s['protocol_result']['status']=='PASS' for s in sessions),
                 'demo_sessions':sum(s['mode']=='DEMO' for s in sessions)})
         return output
+
+
+@app.get('/api/training/reset-summary')
+def training_reset_summary(user=Depends(current_user)):
+    with DB() as db:
+        session_ids=select(TrainingSession.id).where(TrainingSession.profile_id==user['profile_id'])
+        sessions=db.scalar(select(func.count()).select_from(TrainingSession).where(TrainingSession.profile_id==user['profile_id']))
+        attempts=db.scalar(select(func.count()).select_from(Attempt).where(Attempt.session_id.in_(session_ids)))
+    try:files,_=recording_cleanup_plan(RECORDINGS,user['profile_id'])
+    except (ValueError,OSError) as exc:raise HTTPException(409,'ไม่สามารถตรวจโฟลเดอร์ภาพหลักฐานได้ กรุณาตรวจสิทธิ์และโครงสร้างโฟลเดอร์ก่อนรีเซ็ต') from exc
+    return {'sessions':sessions,'attempts':attempts,'images':len(files)}
+
+
+class ResetTrainingRequest(BaseModel):
+    confirmation: Literal['RESET_TRAINING']
+
+
+@app.post('/api/training/reset')
+@serialized
+def reset_training(body:ResetTrainingRequest,user=Depends(current_user)):
+    with runtime.lock:
+        if runtime.session_id or runtime.attempt_id:
+            raise HTTPException(409,'กรุณาจบหรือยุติรอบฝึกก่อนล้างประวัติ')
+        own_capture=runtime.owner_profile_id==user['profile_id']
+    try:recording_cleanup_plan(RECORDINGS,user['profile_id'])
+    except (ValueError,OSError) as exc:raise HTTPException(409,'ไม่สามารถตรวจโฟลเดอร์ภาพหลักฐานได้ ยังไม่ได้ลบข้อมูล') from exc
+    if own_capture:
+        runtime.stop()
+    with DB.begin() as db:
+        session_ids=select(TrainingSession.id).where(TrainingSession.profile_id==user['profile_id'])
+        attempt_ids=select(Attempt.id).where(Attempt.session_id.in_(session_ids))
+        measurements=db.execute(delete(Measurement).where(Measurement.attempt_id.in_(attempt_ids))).rowcount
+        attempts=db.execute(delete(Attempt).where(Attempt.session_id.in_(session_ids))).rowcount
+        sessions=db.execute(delete(TrainingSession).where(TrainingSession.profile_id==user['profile_id'])).rowcount
+    if own_capture:
+        with runtime.lock:
+            runtime.samples=[];runtime.latest=None;runtime.recorder=None;runtime.error=None
+            runtime.recording_limit_reached=False;runtime.config={};runtime.owner_profile_id=None
+    try:images=cleanup_recordings(RECORDINGS,user['profile_id'])
+    except (ValueError,OSError):images={'images_removed':0,'cleanup_complete':False}
+    return {'sessions_removed':sessions,'attempts_removed':attempts,'measurements_removed':measurements,**images}
 
 
 class CalibrationRequest(BaseModel):

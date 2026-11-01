@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { api, number } from "../lib/api";
+import { STANDARD_TABLE, TABLE_RULES_URL } from '../lib/table';
 export function Calibration({ disabled, onApply, previewImage }) {
   const [image, setImage] = useState(""),
     [dimensions, setDimensions] = useState([1, 1]),
     [points, setPoints] = useState([]),
-    [size, setSize] = useState({ width: "", height: "", radius: "" });
+    [size, setSize] = useState({...STANDARD_TABLE});
   const [result, setResult] = useState(null),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
@@ -59,7 +60,9 @@ export function Calibration({ disabled, onApply, previewImage }) {
   }
   return (
     <details className="panel">
-      <summary>ช่วยสอบเทียบกล้องด้านบนจากภาพถ่าย</summary>
+      <summary>สอบเทียบกล้องบน — ใช้ขนาดโต๊ะแข่งขันมาตรฐาน</summary>
+      <p>ค่าเริ่มต้นพื้นที่เล่น 3,569 × 1,778 มม. ลูกเส้นผ่านศูนย์กลาง 52.5 มม. (รัศมี 26.25 มม.) ตาม <a href={TABLE_RULES_URL} target="_blank" rel="noreferrer">กติกา WPBSA หมวด 1</a> เป็นขนาดด้านในขอบชิ่ง ไม่รวมขอบไม้</p>
+      <p className="notice">ค่าที่จะใช้: แนวนอนของภาพ {size.width} มม. × แนวตั้ง {size.height} มม. รัศมีลูก {size.radius} มม. ต้องเห็นมุมพื้นที่เล่นทั้งสี่ หากเห็นเฉพาะพื้นที่ย่อย ให้ระบุขนาดที่วัดจริงในตัวเลือกด้านล่าง</p>
       <p>
         ใช้ภาพเต็มจากกล้องด้านบนที่ความละเอียดเดียวกับตอนฝึก
         ทำเครื่องหมายจุดกึ่งกลางพื้นที่เล่นจริงก่อนถ่ายภาพ
@@ -71,10 +74,12 @@ export function Calibration({ disabled, onApply, previewImage }) {
       </p>
       <fieldset disabled={disabled || busy}>
         <button type="button" className="button secondary" disabled={!previewImage} onClick={()=>{reset();setImage(`data:image/jpeg;base64,${previewImage}`)}}>ใช้ภาพดิบด้านบนที่เปิดอยู่</button>
+        <button type="button" className="button secondary" onClick={()=>{setSize({...size,width:size.height,height:size.width});setResult(null)}}>สลับแนวโต๊ะในภาพ</button>
+        <details><summary>เปลี่ยนขนาดกรณีพื้นที่ย่อยหรืออุปกรณ์ไม่ตรงมาตรฐาน (มม.)</summary>
         <div className="filters">
           {[
             ["width", "ความกว้างพื้นที่เล่น"],
-            ["height", "ความสูงพื้นที่เล่น"],
+            ["height", "ขนาดพื้นที่แนวตั้งในภาพ"],
             ["radius", "รัศมีลูก"],
           ].map(([key, label]) => (
             <label key={key}>
@@ -92,26 +97,8 @@ export function Calibration({ disabled, onApply, previewImage }) {
             </label>
           ))}
         </div>
-        <label className="field">
-          <span>ภาพเต็มจากกล้องด้านบน (JPG / PNG ไม่เกิน 10 MB)</span>
-          <input
-            type="file"
-            accept="image/jpeg,image/png"
-            onChange={async (e) => {
-              const file = e.target.files?.[0];
-              if (!file) return;
-              reset();
-              setImage("");
-              if (file.size > 10000000) {
-                setError("ภาพใหญ่เกิน 10 MB");
-                return;
-              }
-              const reader = new FileReader();
-              reader.onload = () => setImage(String(reader.result));
-              reader.readAsDataURL(file);
-            }}
-          />
-        </label>
+        <button type="button" className="button secondary" onClick={()=>{setSize({...STANDARD_TABLE});setResult(null)}}>คืนค่าโต๊ะแข่งขันมาตรฐาน</button>
+        </details>
         {image && (
           <>
             <p>

@@ -1,6 +1,7 @@
 import { Button } from "../components/ui";
 import { api } from "../lib/api";
-export default function ProfilePage({ user, busy, active, run, onLogout }) {
+import {ResetTraining} from '../components/ResetTraining';
+export default function ProfilePage({ user, busy, active, run, onLogout,onTrainingReset }) {
   return (<>
             <div className="heading">
               <h1>โปรไฟล์ผู้ฝึก</h1>
@@ -26,5 +27,6 @@ export default function ProfilePage({ user, busy, active, run, onLogout }) {
               </Button>
               {active && <p>กรุณาจบรอบฝึกก่อนออกจากระบบ</p>}
             </section>
+            <ResetTraining disabled={busy || active} onReset={onTrainingReset}/>
           </>);
 }

@@ -1,4 +1,10 @@
 export const labels = {
+  ...Object.fromEntries(Object.entries({elbow:'มุมศอก',torso:'มุมลำตัวกับแนวนอน',stance:'ระยะข้อเท้า',knee_shooting:'มุมเข่าฝั่งแทง',knee_support:'มุมเข่าฝั่งสะพานมือ'}).flatMap(([key,label])=>Object.entries({mean:'เฉลี่ย',min:'ต่ำสุด',max:'สูงสุด',sd:' (SD)'}).map(([part,suffix])=>[`${key}_${part}`,`${label}${suffix}`]))),
+  cue_deviation_ratio:'คิวเบี่ยงเบนสูงสุด/ระยะมาร์กเกอร์',
+  head_motion_ratio:'ศีรษะเคลื่อนสูงสุด/ระยะมาร์กเกอร์',
+  bridge_motion_ratio:'สะพานมือเคลื่อนสูงสุด/ระยะมาร์กเกอร์',
+  center_aim_ratio:'แนวเล็งคลาดเคลื่อน/ระยะมาร์กเกอร์ (ประมาณ)',
+  follow_through_ratio:'Follow-through/ระยะมาร์กเกอร์ (ประมาณ)',
   elbow_mean: "มุมศอกเฉลี่ย",
   elbow_sd: "SD มุมศอก",
   torso_mean: "มุมลำตัวเฉลี่ย",

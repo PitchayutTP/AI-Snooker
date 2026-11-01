@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api } from '../lib/api';
 import { Button, Field } from './ui';
+import { moduleCaptureConfig } from '../lib/moduleSettings';
 
 function hsvAt(image, event) {
   const rect=image.getBoundingClientRect();
@@ -23,21 +24,26 @@ function ranges([h,s,v],white=false) {
   return [{lower:[lo,lowS,lowV],upper:[hi,255,255]}];
 }
 
-export function CameraSetup({ config,setConfig,advanced,onAdvanced,status,disabled,onReset,accountKey }) {
+export function CameraSetup({ moduleId,cameras=['side','top'],config,setConfig,advanced,onAdvanced,status,disabled,onReset }) {
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[message,setMessage]=useState('');
-  const [role,setRole]=useState('cue_ball');
+  const [role,setRole]=useState(()=>moduleId===2 && status.frame?.preview_camera!=='top' ? 'marker_tip' : 'cue_ball');
   const [frozen,setFrozen]=useState(null);
   const frame=status.frame || {};
-  const preview=frame.preview_only ? frame : null;
+  const preview=frame.preview_only && cameras.includes(frame.preview_camera) ? frame : null;
   const current=frozen || preview;
+  const usesTop=cameras.includes('top');
+  const selectable=moduleId!==1;
+  const roles=current?.preview_camera==='side'
+    ? (moduleId===2 ? [['marker_tip','สีมาร์กเกอร์ด้านปลายคิว'],['marker_back','สีมาร์กเกอร์ด้านท้ายคิว'],...(usesTop ? [['center','ศูนย์กลางลูกขาว']] : [])] : [])
+    : [['cue_ball','สีลูกขาว'],...(moduleId===3 ? [['target_ball','สีลูกแดง']] : [])];
   function extra() {const value=JSON.parse(advanced);if(!value || Array.isArray(value) || typeof value!=='object')throw new Error('การตั้งค่าต้องเป็น JSON object');return value;}
   function apply(patch) {onAdvanced(JSON.stringify({...extra(),...patch},null,2));onReset();}
   async function action(task) {setBusy(true);setError('');setMessage('');try{await task()}catch(e){setError(e.message)}finally{setBusy(false)}}
   async function previewCamera(camera) {
-    setFrozen(null);onReset();await api('/cameras/preview',{camera,config:{...extra(),...config}});
+    setFrozen(null);setRole(camera==='side' ? 'marker_tip' : 'cue_ball');onReset();await api('/cameras/preview',{camera,config:moduleCaptureConfig(moduleId,config,advanced)});
   }
   function pick(event) {
-    if(disabled || busy || !current)return;
+    if(disabled || busy || !current || !selectable)return;
     try {
       const picked=hsvAt(event.currentTarget,event),settings=extra(),side=current.preview_camera==='side';
       if(role==='center') {
@@ -62,29 +68,24 @@ export function CameraSetup({ config,setConfig,advanced,onAdvanced,status,disabl
       setMessage(`เลือกแล้ว: พิกัด ${picked.xy.join(', ')} / HSV ${picked.hsv.join(', ')} ตรวจผลจริงอีกครั้งหลังนำไปใช้`);
     } catch(e){setError(e.message)}
   }
-  function saved() {return JSON.stringify({version:1,config,advanced:extra()},null,2)}
-  return <section className="panel camera-setup"><h2>ตั้งค่ากล้องสำหรับโต๊ะจริง</h2>
-    <p className="muted">ดูภาพดิบก่อนสอบเทียบ เลือกสีจากกลางวัตถุที่ไม่มีแสงสะท้อน แล้วกดตรวจความพร้อมเมื่อเสร็จ</p>
+  return <section className="panel camera-setup"><h2>ตั้งค่ากล้อง M{moduleId}</h2>
+    <p className="muted">{moduleId===1 ? 'เปิดภาพด้านข้างและจัดให้เห็นจุดร่างกายครบ แล้วกดเริ่มตรวจท่าได้เลย' : 'เปิดภาพ หยุดภาพแล้วเลือกสีจากกลางวัตถุที่ไม่มีแสงสะท้อน'}</p>
     <fieldset disabled={disabled || busy}>
+      <details><summary>แก้ปัญหากล้อง / ความละเอียด / DSHOW</summary>
       <div className="filters">
         {[['capture_width','ความกว้างภาพ',1280],['capture_height','ความสูงภาพ',720],['capture_fps','FPS ที่ร้องขอ',30]].map(([key,label,value])=><Field key={key} label={label}><input type="number" value={config[key] ?? value} onChange={e=>{setConfig({...config,[key]:Number(e.target.value)});onReset()}}/></Field>)}
         <Field label="วิธีเปิดกล้อง"><select value={config.camera_backend || 'AUTO'} onChange={e=>{setConfig({...config,camera_backend:e.target.value});onReset()}}><option>AUTO</option><option>DSHOW</option><option>MSMF</option></select></Field>
       </div>
       <label className="check"><input type="checkbox" checked={!!config.camera_mjpeg} onChange={e=>{setConfig({...config,camera_mjpeg:e.target.checked});onReset()}}/>ร้องขอ MJPEG สำหรับเว็บแคมที่รองรับ</label>
-      <div className="actions"><Button type="button" onClick={()=>action(()=>previewCamera('side'))}>ดูภาพดิบด้านข้าง</Button><Button type="button" onClick={()=>action(()=>previewCamera('top'))}>ดูภาพดิบด้านบน</Button><Button type="button" secondary onClick={()=>action(async()=>{await api('/cameras/stop',{});setFrozen(null);onReset()})}>ปิดกล้อง</Button></div>
+      </details>
+      <div className="actions">{cameras.map(camera=><Button key={camera} type="button" onClick={()=>action(()=>previewCamera(camera))}>{camera==='side' ? 'ดูภาพดิบด้านข้าง' : 'ดูภาพดิบด้านบน'}</Button>)}<Button type="button" secondary onClick={()=>action(async()=>{await api('/cameras/stop',{});setFrozen(null);onReset()})}>ปิดกล้อง</Button></div>
       {current?.image && <><p>ภาพ{current.preview_camera==='side' ? 'ด้านข้าง' : 'ด้านบน'} · ขนาดจริง {current.image_size?.join(' × ')} px</p>
-        <div className="actions"><Button type="button" secondary onClick={()=>setFrozen({...preview})} disabled={!preview}>หยุดภาพเพื่อเลือกจุด</Button><Button type="button" secondary onClick={()=>setFrozen(null)}>กลับภาพสด</Button>
-        <a className="button secondary" download={`camera-${current.preview_camera}.jpg`} href={`data:image/jpeg;base64,${current.image}`}>ดาวน์โหลดภาพสอบเทียบ</a></div>
-        <Field label="สิ่งที่จะเลือกจากภาพ"><select value={role} onChange={e=>setRole(e.target.value)}><option value="cue_ball">สีลูกขาว (ด้านบน)</option><option value="target_ball">สีลูกแดง (ด้านบน)</option><option value="marker_tip">สีมาร์กเกอร์ด้านปลายคิว (ด้านข้าง)</option><option value="marker_back">สีมาร์กเกอร์ด้านท้ายคิว (ด้านข้าง)</option><option value="center">ศูนย์กลางลูกขาว (ด้านข้าง)</option></select></Field>
-        <img className="setup-preview" src={`data:image/jpeg;base64,${current.image}`} alt="คลิกเลือกสีหรือจุดบนภาพกล้องดิบ" onClick={pick}/>
+        {selectable && <div className="actions"><Button type="button" secondary onClick={()=>setFrozen({...preview})} disabled={!preview}>หยุดภาพเพื่อเลือกจุด</Button><Button type="button" secondary onClick={()=>setFrozen(null)}>กลับภาพสด</Button>
+        <a className="button secondary" download={`camera-${current.preview_camera}.jpg`} href={`data:image/jpeg;base64,${current.image}`}>ดาวน์โหลดภาพสอบเทียบ</a></div>}
+        {selectable && roles.length>0 && <Field label="สิ่งที่จะเลือกจากภาพ"><select value={role} onChange={e=>setRole(e.target.value)}>{roles.map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></Field>}
+        <img className="setup-preview" src={`data:image/jpeg;base64,${current.image}`} alt={selectable ? 'คลิกเลือกสีหรือจุดบนภาพกล้องดิบ' : 'ภาพกล้องด้านข้าง'} onClick={selectable ? pick : undefined}/>
       </>}
-      <div className="filters">{[['ball_min_area','พื้นที่ลูกต่ำสุด (px²)',50],['ball_max_area','พื้นที่ลูกสูงสุด (px²)',5000],['ball_max_jump','ระยะเปลี่ยนตำแหน่งสูงสุดต่อเฟรม (px)',120],['motion_threshold','ระยะเริ่มเคลื่อนลูก (หน่วยโต๊ะ)',0],['contact_tolerance','ค่าคลาดเคลื่อนระยะสัมผัส (หน่วยโต๊ะ)',0]].map(([key,label,defaultValue])=>{let settings={};try{settings=extra()}catch{/* shown on apply */}return <Field key={key} label={label}><input type="number" min="0" step="any" value={settings[key] ?? defaultValue} onChange={e=>{try{apply({[key]:Number(e.target.value)})}catch(err){setError(err.message)}}}/></Field>})}</div>
-      <label className="check"><input type="checkbox" checked={(()=>{try{return !!extra().delivery_ball_timing}catch{return false}})()} onChange={e=>{try{apply({delivery_ball_timing:e.target.checked})}catch(err){setError(err.message)}}}/>M2 ใช้สองกล้องเพื่อประมาณ Follow-through และแนวเล็ง (ต้องตั้งระยะเริ่มเคลื่อนลูกมากกว่าศูนย์)</label>
-      <p className="muted">ศูนย์กลางลูกในภาพด้านข้างเป็นจุดตั้งต้นคงที่ ต้องจัดลูกเดิมทุกครั้ง ค่าแนวเล็งไม่ใช่จุดสัมผัสหัวคิวจริง สีและค่าพารามิเตอร์ที่คลิกเป็นค่าเริ่มต้นสำหรับปรับจากการนำร่อง</p>
-      <div className="actions"><Button type="button" secondary onClick={()=>action(async()=>{localStorage.setItem(accountKey,saved());setMessage('บันทึกการตั้งค่าในเบราว์เซอร์นี้แล้ว')})}>บันทึกค่าบนเครื่องนี้</Button><Button type="button" secondary onClick={()=>action(async()=>{const savedValue=JSON.parse(localStorage.getItem(accountKey) || 'null');if(!savedValue || savedValue.version!==1)throw new Error('ยังไม่มีค่าที่บันทึก');setConfig(savedValue.config);onAdvanced(JSON.stringify(savedValue.advanced,null,2));onReset();setFrozen(null);setMessage('โหลดค่าแล้ว กดดูภาพเพื่อตรวจตำแหน่งกล้องอีกครั้ง')})}>โหลดค่าที่บันทึก</Button>
-        <Button type="button" secondary onClick={()=>action(async()=>{const blob=new Blob([saved()],{type:'application/json'});const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download='snooker-table-settings.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)})}>ส่งออกค่าทั้งชุด</Button>
-        <label className="button secondary">นำเข้าค่าทั้งชุด<input className="file-input" type="file" accept=".json" onChange={e=>{const file=e.target.files?.[0];e.target.value='';if(file)action(async()=>{if(file.size>64000)throw new Error('ไฟล์ใหญ่เกิน 64 KB');const value=JSON.parse(await file.text());if(value.version!==1 || !value.config || !value.advanced || Array.isArray(value.config) || Array.isArray(value.advanced))throw new Error('รูปแบบไฟล์ไม่ถูกต้อง');setConfig(value.config);onAdvanced(JSON.stringify(value.advanced,null,2));onReset();setFrozen(null)})}}/></label>
-      </div>
+      {moduleId===2 && usesTop && <p className="muted">ศูนย์กลางลูกในภาพข้างเป็นจุดตั้งต้นคงที่ ต้องจัดลูกเดิมทุกครั้ง ค่าแนวเล็งไม่ใช่จุดสัมผัสหัวคิวจริง</p>}
     </fieldset>{busy && <p role="status">กำลังเปิดกล้อง/ดำเนินการ…</p>}{error && <p className="error" role="alert">{error}</p>}{message && <p className="notice">{message}</p>}
   </section>
 }
