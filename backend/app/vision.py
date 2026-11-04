@@ -1,301 +1,311 @@
 """Optional camera adapters. Heavy libraries load only in live mode."""
-import math
+
 import time
 from pathlib import Path
-from .metrics import distance, line_distance
-from .cameras import open_camera, encode_image
-from .pose import measure_pose
-from .smoothing import LandmarkAverage
+
+from .cameras import encode_image, open_camera
 from .elbow_preview import ElbowPreview
-
-
-class DemoSource:
-    def __init__(self, config): self.i=0
-    def read(self):
-        self.i+=1; stamp=time.monotonic(); offset=2*math.sin(self.i/10)
-        # Simulated data are explicitly labelled DEMO and never used as LIVE evidence.
-        return {'t':stamp,'elbow':90+offset,'head':[320+offset,180],'bridge':[450+offset,340],
-                'knee_shooting':170.,'cue':[[100+offset,100],[40+offset,100]],
-                'balls':[],'source':'DEMO','image':None,'error':None,
-                'capture_ms':0.,'processing_ms':0.,'ready':True}
-    def close(self): pass
+from .pose import measure_pose
+from .pose_settings import pose_options
+from .smoothing import LandmarkAverage
 
 
 class LiveSource:
     def __init__(self, config):
         import cv2
-        self.cv2=cv2
-        self.config=config
-        self.elbow_preview=ElbowPreview()
-        self.pose_overlay=LandmarkAverage(config.get('smoothing_window',1) if config['exercise_id']==1 else 1,
-                                         config.get('smoothing_max_gap_s',.25) if config['exercise_id']==1 else config.get('max_frame_gap_s',.25),
-                                         config.get('smoothing_method','MEAN') if config['exercise_id']==1 else 'MEAN',
-                                         config.get('smoothing_tau_seconds',.35),
-                                         display_deadband=1.5 if config['exercise_id']==1 else 0)
-        self.caps={}; self.pose=None; self.yolo=None; self.colour=None
+
+        self.cv2 = cv2
+        self.config = config
+        self.elbow_preview = ElbowPreview()
+        self.pose_overlay = LandmarkAverage(
+            config.get("smoothing_window", 1) if config["exercise_id"] == 1 else 1,
+            config.get("smoothing_max_gap_s", 0.25)
+            if config["exercise_id"] == 1
+            else config.get("max_frame_gap_s", 0.25),
+            config.get("smoothing_method", "MEAN") if config["exercise_id"] == 1 else "MEAN",
+            config.get("smoothing_tau_seconds", 0.35),
+            display_deadband=1.5 if config["exercise_id"] == 1 else 0,
+        )
+        self.caps = {}
+        self.pose = None
+        self.colour = None
         try:
-            for name in config['required']:
-                source=config[f'{name}_source']
+            for name in config["required"]:
+                source = config[f"{name}_source"]
                 # Camera indices or video paths; files must be explicitly selected.
-                cap=open_camera(cv2,source,config)
-                self.caps[name]=cap
-                if not cap.isOpened(): raise ValueError(f'เปิดกล้อง/วิดีโอ {name} ไม่ได้')
-            if 'side' in self.caps:
+                cap = open_camera(cv2, source, config)
+                self.caps[name] = cap
+                if not cap.isOpened():
+                    raise ValueError(f"เปิดกล้อง/วิดีโอ {name} ไม่ได้")
+            if "side" in self.caps:
                 import mediapipe as mp
-                model=Path(config['pose_model'])
+
+                model = Path(config["pose_model"])
                 if not model.is_absolute():
-                    model=Path(__file__).resolve().parents[1]/model
-                if not model.is_file(): raise ValueError('ไม่พบโมเดล Pose: รัน setup-camera.ps1 ที่โฟลเดอร์โปรเจกต์ก่อน')
-                self.mp=mp
-                self.pose=mp.tasks.vision.PoseLandmarker.create_from_options(
-                    mp.tasks.vision.PoseLandmarkerOptions(
-                        base_options=mp.tasks.BaseOptions(model_asset_buffer=model.read_bytes()),
-                        running_mode=mp.tasks.vision.RunningMode.VIDEO, num_poses=1))
-            if 'top' in self.caps:
-                if not config.get('homography'): raise ValueError('ต้องมี homography ของกล้องด้านบน')
-                if config.get('ball_detector','HSV')=='HSV':
-                    from .colour import ColourTracker
-                    self.colour=ColourTracker(config['ball_colours'],config['ball_min_area'],config['ball_max_area'],config['ball_max_jump'],config['max_frame_gap_s'])
-                else:
-                    from ultralytics import YOLO
-                    model=Path(config['ball_model'])
-                    if not model.is_absolute(): model=Path(__file__).resolve().parents[1]/model
-                    if not model.is_file(): raise ValueError('ไม่พบโมเดลลูกที่ฝึกไว้ (.pt)')
-                    self.yolo=YOLO(str(model))
-                    names=self.yolo.names
-                    mapped={config.get('ball_roles',{}).get(str(name),str(name)) for name in (names.values() if isinstance(names,dict) else names)}
-                    required_roles={'cue_ball','target_ball'} if config['exercise_id']>=3 else {'cue_ball'}
-                    if not required_roles.issubset(mapped):
-                        raise ValueError('คลาสโมเดลไม่ตรงแบบฝึก ต้องมี cue_ball/target_ball หรือกำหนด ball_roles ให้ตรง ห้ามใช้โมเดลทั่วไปที่ยังไม่ฝึกลูกสนุกเกอร์')
-            self.ts=0
+                    model = Path(__file__).resolve().parents[1] / model
+                if not model.is_file():
+                    raise ValueError("ไม่พบโมเดล Pose: รัน setup-camera.ps1 ที่โฟลเดอร์โปรเจกต์ก่อน")
+                self.mp = mp
+                self.pose = mp.tasks.vision.PoseLandmarker.create_from_options(
+                    pose_options(mp, model, config["exercise_id"])
+                )
+                self.pose_model_name = model.name
+            if "top" in self.caps:
+                if not config.get("homography"):
+                    raise ValueError("ต้องมี homography ของกล้องด้านบน")
+                from .colour import ColourTracker
+
+                self.colour = ColourTracker(
+                    config["ball_colours"],
+                    config["ball_min_area"],
+                    config["ball_max_area"],
+                    config["ball_max_jump"],
+                    max(config["max_frame_gap_s"], config.get("m3_stationary_loss_seconds", 0)),
+                    ball_radius=config.get("ball_radius"),
+                    table_size=config.get("table_size"),
+                    temporal_association=True,
+                )
+            self.ts = 0
         except Exception:
             self.close()
             raise
 
     def read(self):
-        cv2=self.cv2
+        cv2 = self.cv2
         import numpy as np
-        start=time.monotonic()
-        sample={'t':start,'capture_epoch_ms':time.time()*1000,'source':'LIVE','image':None,'balls':[],'cue':None,
-                'elbow':None,'head':None,'bridge':None,'knee_shooting':None,
-                'error':None,'ready':True}
-        frames={}; times={}
-        pose_issues=[]
+
+        start = time.monotonic()
+        sample = {
+            "t": start,
+            "capture_epoch_ms": time.time() * 1000,
+            "source": "LIVE",
+            "image": None,
+            "balls": [],
+            "cue": None,
+            "elbow": None,
+            "head": None,
+            "bridge": None,
+            "knee_shooting": None,
+            "error": None,
+            "ready": True,
+        }
+        frames = {}
+        times = {}
+        pose_issues = []
         # Grab all devices before decoding; timestamps describe receipt, not hardware sync.
-        grabbed={name:cap.grab() for name,cap in self.caps.items()}
-        for name,cap in self.caps.items():
-            ok,frame=cap.retrieve() if grabbed[name] else (False,None)
-            times[name]=time.monotonic()
+        grabbed = {name: cap.grab() for name, cap in self.caps.items()}
+        for name, cap in self.caps.items():
+            ok, frame = cap.retrieve() if grabbed[name] else (False, None)
+            times[name] = time.monotonic()
             if not ok:
-                sample.update(ready=False,error=f'{name}: กล้องขาดการเชื่อมต่อหรือวิดีโอสิ้นสุด')
+                sample.update(ready=False, error=f"{name}: กล้องขาดการเชื่อมต่อหรือวิดีโอสิ้นสุด")
                 return sample
-            frames[name]=frame
-            expected=self.config.get('calibration_image_size') if name=='top' else self.config.get('side_image_size')
-            if expected and list(expected)!=[frame.shape[1],frame.shape[0]]:
-                raise ValueError(f'ความละเอียดกล้อง {name} เปลี่ยน ต้องสอบเทียบ/เลือกจุดใหม่')
-        sample['capture_ms']=(time.monotonic()-start)*1000
-        if self.config.get('record_frames'):
-            sample['_raw_frames']={name:frame.copy() for name,frame in frames.items()}
-        sample['frame_receive_times']=times
-        if len(times)==2 and abs(times['side']-times['top'])*1000>self.config['sync_tolerance_ms']:
-            sample.update(ready=False,error='เวลารับเฟรมต่างกันเกินเกณฑ์')
-            return sample
-        if 'side' in frames:
-            frame=frames['side']; h,w=frame.shape[:2]
-            rgb=cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
-            self.ts=max(self.ts+1,int(start*1000))
-            res=self.pose.detect_for_video(self.mp.Image(image_format=self.mp.ImageFormat.SRGB,data=rgb),self.ts)
+            frames[name] = frame
+            expected = self.config.get("calibration_image_size") if name == "top" else None
+            if expected and list(expected) != [frame.shape[1], frame.shape[0]]:
+                raise ValueError(f"ความละเอียดกล้อง {name} เปลี่ยน ต้องสอบเทียบ/เลือกจุดใหม่")
+        sample["capture_ms"] = (time.monotonic() - start) * 1000
+        if self.config.get("record_frames"):
+            sample["_raw_frames"] = {name: frame.copy() for name, frame in frames.items()}
+        sample["frame_receive_times"] = times
+        if "side" in frames:
+            frame = frames["side"]
+            h, w = frame.shape[:2]
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            self.ts = max(self.ts + 1, int(start * 1000))
+            sample["pose_model_name"] = self.pose_model_name
+            inference_start = time.monotonic()
+            res = self.pose.detect_for_video(
+                self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=rgb), self.ts
+            )
+            sample["pose_inference_ms"] = (time.monotonic() - inference_start) * 1000
             if res.pose_landmarks:
-                measured,visible,pose_issues=measure_pose(res.pose_landmarks[0],w,h,
-                    self.config['hand'],self.config['visibility'],self.config['exercise_id'])
+                measured, visible, pose_issues = measure_pose(
+                    res.pose_landmarks[0],
+                    w,
+                    h,
+                    self.config["hand"],
+                    self.config["visibility"],
+                    self.config["exercise_id"],
+                )
                 sample.update(measured)
                 # Display only the joints used by this module, not the hidden far shoulder.
-                shown_points=self.pose_overlay.apply(visible,start)
-                if self.config['exercise_id']==1:
-                    arm=(12,14,16) if self.config['hand']=='RIGHT' else (11,13,15)
-                    for a,b in zip(arm,arm[1:]):
+                shown_points = self.pose_overlay.apply(visible, start)
+                if self.config["exercise_id"] == 1:
+                    arm = (12, 14, 16) if self.config["hand"] == "RIGHT" else (11, 13, 15)
+                    for a, b in zip(arm, arm[1:]):
                         if a in shown_points and b in shown_points:
-                            cv2.line(frame,tuple(round(v*16) for v in shown_points[a]),
-                                     tuple(round(v*16) for v in shown_points[b]),(255,190,40),2,cv2.LINE_AA,4)
-                for index,p in shown_points.items():
-                    xy=tuple(map(int,p))
+                            cv2.line(
+                                frame,
+                                tuple(round(v * 16) for v in shown_points[a]),
+                                tuple(round(v * 16) for v in shown_points[b]),
+                                (255, 190, 40),
+                                2,
+                                cv2.LINE_AA,
+                                4,
+                            )
+                for index, p in shown_points.items():
+                    xy = tuple(map(int, p))
                     # Fractional pixel centres avoid a one-pixel jump from integer rounding.
-                    cv2.circle(frame,tuple(round(v*16) for v in p),80,(60,220,90),-1,cv2.LINE_AA,4)
-                    cv2.putText(frame,str(index),(xy[0]+6,xy[1]-6),cv2.FONT_HERSHEY_SIMPLEX,.4,(60,220,90),1)
-                if self.config['exercise_id']==1:
-                    sample['elbow_preview']=self.elbow_preview.render(frame,shown_points,self.config['hand'])
+                    cv2.circle(
+                        frame,
+                        tuple(round(v * 16) for v in p),
+                        80,
+                        (60, 220, 90),
+                        -1,
+                        cv2.LINE_AA,
+                        4,
+                    )
+                    cv2.putText(
+                        frame,
+                        str(index),
+                        (xy[0] + 6, xy[1] - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.4,
+                        (60, 220, 90),
+                        1,
+                    )
+                if self.config["exercise_id"] == 1:
+                    sample["elbow_preview"] = self.elbow_preview.render(
+                        frame, shown_points, self.config["hand"]
+                    )
             else:
-                self.pose_overlay.apply({},start)
-                pose_issues=['ยังตรวจไม่พบร่างกาย จัดกล้องให้เห็นแขนและขาฝั่งแทง'
-                    if self.config['exercise_id']==1 else 'ยังตรวจไม่พบร่างกาย จัดกล้องให้เห็นผู้ฝึกชัดเจน']
-            # Optional explicit coloured markers: real detections, no inferred cue tip.
-            hsv=cv2.cvtColor(frame,cv2.COLOR_BGR2HSV)
-            marker_points=[]
-            for bounds in self.config.get('cue_markers',[]):
-                mask=cv2.inRange(hsv,np.array(bounds['lower'],dtype=np.uint8),np.array(bounds['upper'],dtype=np.uint8))
-                contours,_=cv2.findContours(mask,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
-                contours=[c for c in contours if cv2.contourArea(c)>=bounds.get('min_area',10)]
-                if len(contours)!=1:
-                    marker_points=[]; break
-                moment=cv2.moments(contours[0])
-                if not moment['m00']: marker_points=[]; break
-                marker_points.append([moment['m10']/moment['m00'],moment['m01']/moment['m00']])
-            if len(marker_points)==2:
-                sample['cue']=marker_points
-                cv2.line(frame,tuple(map(int,marker_points[0])),tuple(map(int,marker_points[1])),(255,180,0),2)
-        if 'top' in frames:
-            frame=frames['top']
+                self.pose_overlay.apply({}, start)
+                pose_issues = [
+                    "ยังตรวจไม่พบร่างกาย จัดกล้องให้เห็นแขนและขาฝั่งแทง"
+                    if self.config["exercise_id"] == 1
+                    else "ยังตรวจไม่พบร่างกาย จัดกล้องให้เห็นผู้ฝึกชัดเจน"
+                ]
+            if sample.get("cue"):
+                cv2.line(
+                    frame,
+                    tuple(map(int, sample["cue"][0])),
+                    tuple(map(int, sample["cue"][1])),
+                    (255, 180, 0),
+                    2,
+                )
+        if "top" in frames:
+            frame = frames["top"]
             if self.colour:
                 # Mask outside table quadrilateral, computed from the inverse calibration.
-                width,height=self.config['table_size']
-                corners=np.array([[[0,0],[width,0],[width,height],[0,height]]],dtype=np.float32)
-                inv=np.linalg.inv(np.asarray(self.config['homography'],dtype=float))
-                imagecorners=cv2.perspectiveTransform(corners,inv)[0]
-                mask=np.zeros(frame.shape[:2],dtype=np.uint8)
-                cv2.fillConvexPoly(mask,np.round(imagecorners).astype(np.int32),255)
-                cropped=cv2.bitwise_and(frame,frame,mask=mask)
-                sample['balls']=self.colour.detect(cropped,start,self.config['homography'])
-                for ball in sample['balls']:
-                    x,y=map(int,ball['image_xy'])
-                    cv2.circle(frame,(x,y),10,(0,200,200),2)
-                    cv2.putText(frame,ball['class'],(x+12,y),cv2.FONT_HERSHEY_SIMPLEX,.4,(0,200,200),1)
-            else:
-                result=self.yolo.track(frame,persist=True,verbose=False,conf=self.config['ball_confidence'],
-                                       tracker=self.config.get('ball_tracker','bytetrack.yaml'),device=self.config.get('ball_device','cpu'))[0]
-                boxes=result.boxes
-                H=np.asarray(self.config['homography'],dtype=float)
-                if boxes is not None:
-                    for box in boxes:
-                        x1,y1,x2,y2=box.xyxy[0].cpu().tolist()
-                        confidence=float(box.conf.item())
-                        if not all(math.isfinite(x) for x in (x1,y1,x2,y2,confidence)) or x2<=x1 or y2<=y1: continue
-                        p=cv2.perspectiveTransform(np.array([[[(x1+x2)/2,(y1+y2)/2]]],dtype=np.float32),H)[0,0]
-                        if not np.isfinite(p).all(): continue
-                        name=str(result.names[int(box.cls.item())])
-                        role=self.config.get('ball_roles',{}).get(name,name)
-                        sample['balls'].append({'xy':p.tolist(),'class':role,'detected_class':name,
-                            'box_xyxy':[x1,y1,x2,y2],'confidence':confidence,
-                            'id':int(box.id.item()) if box.id is not None else None})
-                        cv2.rectangle(frame,(int(x1),int(y1)),(int(x2),int(y2)),(0,220,100),2)
-        if 'top' in frames:
-            width,height=self.config['table_size']
-            sample['balls']=[ball for ball in sample['balls'] if 0<=ball['xy'][0]<=width and 0<=ball['xy'][1]<=height]
+                width, height = self.config["table_size"]
+                corners = np.array(
+                    [[[0, 0], [width, 0], [width, height], [0, height]]], dtype=np.float32
+                )
+                inv = np.linalg.inv(np.asarray(self.config["homography"], dtype=float))
+                imagecorners = cv2.perspectiveTransform(corners, inv)[0]
+                mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+                cv2.fillConvexPoly(mask, np.round(imagecorners).astype(np.int32), 255)
+                sample["balls"] = self.colour.detect(
+                    frame, start, self.config["homography"], roi_mask=mask
+                )
+                sample["ball_detection"] = {
+                    "detector": "HSV",
+                    "roles": self.colour.diagnostics,
+                    "calibrated": True,
+                    "table_size": self.config["table_size"],
+                    "ball_radius": self.config["ball_radius"],
+                }
+                cv2.polylines(
+                    frame, [np.round(imagecorners).astype(np.int32)], True, (255, 180, 0), 2
+                )
+                for ball in sample["balls"]:
+                    x, y = map(int, ball["image_xy"])
+                    cv2.circle(frame, (x, y), 10, (0, 200, 200), 2)
+                    cv2.putText(
+                        frame,
+                        ball["class"],
+                        (x + 12, y),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.4,
+                        (0, 200, 200),
+                        1,
+                    )
+        if "top" in frames:
+            width, height = self.config["table_size"]
+            sample["balls"] = [
+                ball
+                for ball in sample["balls"]
+                if 0 <= ball["xy"][0] <= width and 0 <= ball["xy"][1] <= height
+            ]
         # Selected preview; raw reference frames are opt-in.
-        frame=frames.get('side',frames.get('top'))
-        preview=cv2.resize(frame,(640,int(frame.shape[0]*640/frame.shape[1])))
-        ok,jpeg=cv2.imencode('.jpg',preview,[cv2.IMWRITE_JPEG_QUALITY,65])
+        frame = frames.get("side", frames.get("top"))
+        preview = cv2.resize(frame, (640, int(frame.shape[0] * 640 / frame.shape[1])))
+        ok, jpeg = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 65])
         if ok:
             import base64
-            sample['image']=base64.b64encode(jpeg).decode('ascii')
-        if 'side' in frames:
-            if self.config['exercise_id']==1:
-                sample['ready']=all(sample.get(key) is not None for key in ['elbow','knee_shooting'])
-            else:
-                sample['ready']=all(sample.get(key) is not None for key in ['elbow','head','bridge','cue'])
-        if 'top' in frames:
-            sample['ready']=sample['ready'] and all(
-                len([b for b in sample['balls'] if b['class']==name and b['id'] is not None])==1
-                for name in (['cue_ball','target_ball'] if self.config['exercise_id']>=3 else ['cue_ball']))
-        issues=[]
-        if 'side' in frames:
+
+            sample["image"] = base64.b64encode(jpeg).decode("ascii")
+        if "side" in frames:
+            if self.config["exercise_id"] == 1:
+                sample["ready"] = all(
+                    sample.get(key) is not None for key in ["forearm_tilt", "knee_shooting"]
+                )
+        if "top" in frames:
+            sample["ready"] = sample["ready"] and all(
+                len([b for b in sample["balls"] if b["class"] == name and b["id"] is not None]) == 1
+                for name in ["cue_ball", "target_ball"]
+            )
+        issues = []
+        if "side" in frames:
             issues += pose_issues
-            if self.config['exercise_id']==2 and sample.get('cue') is None:
-                issues.append('ยังตรวจไม่พบมาร์กเกอร์สีสองจุดบนคิวชัดเจน')
-        if 'top' in frames:
-            for role,label in [('cue_ball','ลูกขาว'),('target_ball','ลูกเป้า')]:
-                if role=='target_ball' and self.config['exercise_id']==2: continue
-                if len([b for b in sample['balls'] if b['class']==role and b['id'] is not None])!=1:
-                    issues.append(f'ต้องตรวจพบ{label}พร้อมรหัสติดตามอย่างละหนึ่งลูก')
-        sample['readiness_issues']=issues
-        sample['images']={}
-        sample['image_sizes']={}
-        for name,raw in frames.items():
-            small=cv2.resize(raw,(640,int(raw.shape[0]*640/raw.shape[1])))
-            sample['images'][name]=encode_image(cv2,small,65)
-            sample['image_sizes'][name]=[raw.shape[1],raw.shape[0]]
-        sample['processing_ms']=(time.monotonic()-start)*1000
+        if "top" in frames:
+            cue_label = "ลูกน้ำเงิน" if self.config.get("cue_ball_colour") == "BLUE" else "ลูกขาว"
+            for role, label in [("cue_ball", cue_label), ("target_ball", "ลูกเป้า")]:
+                if (
+                    len([b for b in sample["balls"] if b["class"] == role and b["id"] is not None])
+                    != 1
+                ):
+                    issues.append(f"ต้องตรวจพบ{label}พร้อมรหัสติดตามอย่างละหนึ่งลูก")
+                    if self.colour:
+                        detail = self.colour.diagnostics.get(role, {})
+                        if detail.get("status") == "AMBIGUOUS":
+                            issues.append(
+                                f"{label}: พบวัตถุสีและขนาดใกล้เคียงหลายชิ้น ให้นำลูกหรือสิ่งของอื่นออก"
+                            )
+                        elif detail.get("status") == "COLOUR_OVERLAP":
+                            issues.append("ช่วงสีลูกที่ใช้แทงกับลูกแดงซ้อนกัน ให้เลือกสีใหม่")
+                        elif (
+                            detail.get("roi_mask_pixels") == 0
+                            and detail.get("raw_mask_pixels", 0) > 0
+                        ):
+                            issues.append(
+                                f"{label}: พบสีในภาพ แต่ไม่อยู่ในพื้นที่สอบเทียบ ตรวจมุมพื้นที่และตำแหน่งลูก"
+                            )
+                        elif not detail.get("mask_pixels"):
+                            issues.append(f"{label}: ไม่พบสีที่เลือกในพื้นที่โต๊ะ เลือกสีจากภาพจริงใหม่")
+                        elif detail.get("rejected", {}).get("size"):
+                            issues.append(
+                                f"{label}: พบสีและรูปร่าง แต่ขนาดที่แปลงจากการสอบเทียบไม่ตรงกับรัศมีลูก ตรวจขนาดพื้นที่จริง แนวนอน/แนวตั้ง และความละเอียดกล้อง"
+                            )
+                        else:
+                            issues.append(
+                                f"{label}: พบสีแต่พื้นที่พิกเซลหรือรูปร่างไม่ผ่าน ตรวจแสง ความคมชัด และอย่าวางลูกชิดขอบพื้นที่"
+                            )
+        sample["readiness_issues"] = issues
+        sample["images"] = {}
+        sample["image_sizes"] = {}
+        for name, raw in frames.items():
+            small = cv2.resize(raw, (640, int(raw.shape[0] * 640 / raw.shape[1])))
+            sample["images"][name] = encode_image(cv2, small, 65)
+            sample["image_sizes"][name] = [raw.shape[1], raw.shape[0]]
+        sample["processing_ms"] = (time.monotonic() - start) * 1000
         return sample
 
     def close(self):
-        for cap in self.caps.values(): cap.release()
-        if self.pose: self.pose.close()
+        for cap in self.caps.values():
+            cap.release()
+        if self.pose:
+            self.pose.close()
 
 
 def ball_metrics(samples, config, setup):
     """M3 contact measurements; M1/M2 do not evaluate ball contact.
-    Reject gaps, missing IDs, ambiguity and ID switches instead of joining traces.
+    Reject long gaps, missing IDs, ambiguity and ID switches. The configured
+    M3 brief-loss path uses only real observations with the same track IDs.
     """
-    if 'fraction' in setup:
+    if "fraction" in setup:
         from .contact import contact_metrics
-        return contact_metrics(samples,config,setup)
-    return {},[]
 
-
-def delivery_ratios(samples, baseline_seconds, measured, config):
-    """Dimensionless image ratios to baseline cue-marker span; not metric distances."""
-    import statistics
-    keys={'cue_deviation_ratio':'cue_deviation_max','head_motion_ratio':'head_max',
-          'bridge_motion_ratio':'bridge_max','center_aim_ratio':'center_aim_error',
-          'follow_through_ratio':'follow_through'}
-    result={key:None for key in keys}
-    if not samples:return result
-    base=[s['cue'] for s in samples if s.get('cue') and s['t']-samples[0]['t']<=baseline_seconds]
-    spans=[distance(*cue) for cue in base]
-    if len(spans)<config.get('min_valid_frames',5) or any(not math.isfinite(v) or v<=1e-9 for v in spans):return result
-    span=statistics.mean(spans)
-    for key,raw in keys.items():
-        value=measured.get(raw)
-        if value is not None and math.isfinite(value):result[key]=value/span
-    return result
-
-
-def cue_metrics(samples, baseline_seconds, config=None):
-    result={'cue_deviation_mean':None,'cue_deviation_max':None,
-            'follow_through':None,'center_aim_error':None}
-    if not samples: return result
-    config=config or {}
-    minimum=config.get('min_valid_frames',5);ratio=config.get('min_valid_ratio',.7)
-    import statistics
-    base=[s['cue'] for s in samples if s.get('cue') and s['t']-samples[0]['t']<=baseline_seconds]
-    active=[s for s in samples if s['t']-samples[0]['t']>baseline_seconds]
-    valid=[s['cue'] for s in active if s.get('cue')]
-    if len(base)<minimum or len(valid)<minimum or len(valid)/max(1,len(active))<ratio: return result
-    a,b=[tuple(statistics.mean(c[k][i] for c in base) for i in (0,1)) for k in (0,1)]
-    deviations=[line_distance(c[0],a,b) for c in valid]
-    deviations=[d for d in deviations if d is not None]
-    if deviations:
-        result['cue_deviation_mean']=statistics.mean(deviations)
-        result['cue_deviation_max']=max(deviations)
-    config=config or {}
-    # Optional experimental timing from top-view cue-ball departure, not observed impact.
-    if config.get('delivery_ball_timing') and config.get('motion_threshold',0)>0:
-        baseballs=[]; trace=[]; ids=set()
-        for s in samples:
-            balls=[ball for ball in s.get('balls',[]) if ball['class']=='cue_ball' and ball['id'] is not None]
-            if len(balls)!=1: return result
-            ball=balls[0]; ids.add(ball['id'])
-            if s['t']-samples[0]['t']<=baseline_seconds: baseballs.append(ball['xy'])
-            else: trace.append((s,ball['xy']))
-        if len(ids)!=1 or len(baseballs)<5: return result
-        origin=[statistics.mean(p[i] for p in baseballs) for i in (0,1)]
-        motion=None
-        for i in range(1,len(trace)):
-            before,p=trace[i-1]; current,q=trace[i]
-            if current['t']-before['t']>config.get('max_frame_gap_s',.25): return result
-            if distance(p,origin)>config['motion_threshold'] and distance(q,origin)>config['motion_threshold']:
-                motion=i-1; break
-        if motion is not None:
-            contact=trace[motion][0]
-            later=[s for s,_ in trace[motion:]]
-            if contact.get('cue') and all(s.get('cue') for s in later):
-                tip,back=contact['cue']; length=distance(tip,back)
-                if length>1e-9:
-                    direction=[(tip[i]-back[i])/length for i in (0,1)]
-                    projected=[sum((s['cue'][0][i]-tip[i])*direction[i] for i in (0,1)) for s in later]
-                    result['follow_through']=max(0.,max(projected))
-            # Cue-line aim proxy immediately before movement; NOT physical contact point.
-            pre=trace[max(0,motion-1)][0]
-            center=config.get('side_ball_center')
-            if center is not None and pre.get('cue'):
-                result['center_aim_error']=line_distance(center,*pre['cue'])
-    return result
+        return contact_metrics(samples, config, setup)
+    return {}, []

@@ -8,3 +8,5 @@ data/
 .env
 start.txt
 backend/models/
+
+.ruff_cache/

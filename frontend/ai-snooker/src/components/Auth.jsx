@@ -37,12 +37,7 @@ export default function Auth({ onLogin }) {
       <form onSubmit={submit} key={String(register)}>
         {register && (
           <Field label="ชื่อที่แสดง">
-            <input
-              name="display_name"
-              required
-              maxLength={100}
-              autoComplete="name"
-            />
+            <input name="display_name" required maxLength={100} autoComplete="name" />
           </Field>
         )}
         <Field label="ชื่อผู้ใช้">
@@ -86,11 +81,7 @@ export default function Auth({ onLogin }) {
           </>
         )}
         <label className="check">
-          <input
-            type="checkbox"
-            checked={show}
-            onChange={(e) => setShow(e.target.checked)}
-          />
+          <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />
           แสดงรหัสผ่าน
         </label>
         {error && (
@@ -115,4 +106,3 @@ export default function Auth({ onLogin }) {
     </main>
   );
 }
-

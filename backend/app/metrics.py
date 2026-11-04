@@ -1,4 +1,5 @@
 """Pure, independently testable measurements. None of these defines an ideal posture."""
+
 import math
 import statistics
 
@@ -13,86 +14,105 @@ def angle(a, b, c):
     den = math.hypot(*u) * math.hypot(*v)
     if den < 1e-9:
         return None
-    return math.degrees(math.acos(max(-1, min(1, sum(x*y for x,y in zip(u,v))/den))))
+    return math.degrees(math.acos(max(-1, min(1, sum(x * y for x, y in zip(u, v)) / den))))
 
 
 def line_distance(p, a, b):
     den = distance(a, b)
-    return None if den < 1e-9 else abs((b[0]-a[0])*(a[1]-p[1])-(a[0]-p[0])*(b[1]-a[1]))/den
+    return (
+        None
+        if den < 1e-9
+        else abs((b[0] - a[0]) * (a[1] - p[1]) - (a[0] - p[0]) * (b[1] - a[1])) / den
+    )
 
 
 def stats(values):
     values = [v for v in values if v is not None and math.isfinite(v)]
-    return {'n': len(values), 'mean': statistics.mean(values) if values else None,
-            'min': min(values) if values else None,
-            'max': max(values) if values else None,
-            'sd': statistics.stdev(values) if len(values) >= 2 else None}
+    return {
+        "n": len(values),
+        "mean": statistics.mean(values) if values else None,
+        "min": min(values) if values else None,
+        "max": max(values) if values else None,
+        "sd": statistics.stdev(values) if len(values) >= 2 else None,
+    }
 
 
-def data_quality(samples,baseline_seconds):
-    duration=max(0,samples[-1]['t']-samples[0]['t']) if len(samples)>1 else 0
-    baseline=[s for s in samples if s['t']-samples[0]['t']<=baseline_seconds] if samples else []
-    active=[s for s in samples if s['t']-samples[0]['t']>baseline_seconds] if samples else []
-    keys=['elbow','head','bridge','cue','knee_shooting']
-    return {'samples':len(samples),'duration_s':duration,
-            'effective_capture_fps':(len(samples)-1)/duration if duration else None,
-            'baseline_samples':len(baseline),'active_samples':len(active),
-            'active_valid_counts':{key:sum(s.get(key) is not None for s in active) for key in keys},
-            'baseline_valid_counts':{key:sum(s.get(key) is not None for s in baseline) for key in keys},
-            'not_ready_frames':sum(not s.get('ready',False) for s in samples),
-            'recorded_frames':sum(bool(s.get('recorded_images')) for s in samples),
-            'recording_ms':stats([s.get('recording_ms') for s in samples]),
-            'processing_ms':stats([s.get('processing_ms') for s in samples])}
+def data_quality(samples, baseline_seconds):
+    duration = max(0, samples[-1]["t"] - samples[0]["t"]) if len(samples) > 1 else 0
+    baseline = (
+        [s for s in samples if s["t"] - samples[0]["t"] <= baseline_seconds] if samples else []
+    )
+    active = [s for s in samples if s["t"] - samples[0]["t"] > baseline_seconds] if samples else []
+    keys = ["elbow", "head", "bridge", "cue", "knee_shooting", "forearm_tilt", "torso_lean"]
+    return {
+        "samples": len(samples),
+        "duration_s": duration,
+        "effective_capture_fps": (len(samples) - 1) / duration if duration else None,
+        "baseline_samples": len(baseline),
+        "active_samples": len(active),
+        "active_valid_counts": {key: sum(s.get(key) is not None for s in active) for key in keys},
+        "baseline_valid_counts": {
+            key: sum(s.get(key) is not None for s in baseline) for key in keys
+        },
+        "not_ready_frames": sum(not s.get("ready", False) for s in samples),
+        "recorded_frames": sum(bool(s.get("recorded_images")) for s in samples),
+        "recording_ms": stats([s.get("recording_ms") for s in samples]),
+        "processing_ms": stats([s.get("processing_ms") for s in samples]),
+        "pose_inference_ms": stats([s.get("pose_inference_ms") for s in samples]),
+    }
 
 
 def evaluate(measurements, definition, active_duration_seconds=None):
-    if not definition.get('approved'):
-        return 'INVALID', 'ยังไม่มีเกณฑ์ที่ผู้จัดทำยืนยัน ใช้ดูค่าการวัดเท่านั้น'
-    rules = definition.get('rules', {})
+    if not definition.get("approved"):
+        return "INVALID", "ยังไม่มีเกณฑ์ที่ผู้จัดทำยืนยัน ใช้ดูค่าการวัดเท่านั้น"
+    rules = definition.get("rules", {})
     if not rules:
-        return 'INVALID', 'ไม่มีกฎตัดสินผล'
-    minimum = definition.get('minimum_active_seconds')
-    if minimum is not None and (active_duration_seconds is None or
-            not math.isfinite(active_duration_seconds) or active_duration_seconds < minimum):
-        return 'INVALID', f'ช่วงวัดหลังเก็บฐานต้องยาวอย่างน้อย {minimum:g} วินาที กรุณาบันทึกให้นานขึ้น'
+        return "INVALID", "ไม่มีกฎตัดสินผล"
+    minimum = definition.get("minimum_active_seconds")
+    if minimum is not None and (
+        active_duration_seconds is None
+        or not math.isfinite(active_duration_seconds)
+        or active_duration_seconds < minimum
+    ):
+        return "INVALID", f"ช่วงวัดหลังเก็บฐานต้องยาวอย่างน้อย {minimum:g} วินาที กรุณาบันทึกให้นานขึ้น"
     missing = [key for key in rules if measurements.get(key) is None]
     if missing:
-        return 'INVALID', 'ข้อมูลไม่ครบ: ' + ', '.join(missing)
+        return "INVALID", "ข้อมูลไม่ครบ: " + ", ".join(missing)
     failed = []
     for key, rule in rules.items():
         value = measurements[key]
         if not math.isfinite(value):
-            return 'INVALID', f'ค่าที่ไม่เป็นจำนวนจำกัด: {key}'
-        if ('min' in rule and value < rule['min']) or ('max' in rule and value > rule['max']):
+            return "INVALID", f"ค่าที่ไม่เป็นจำนวนจำกัด: {key}"
+        if ("min" in rule and value < rule["min"]) or ("max" in rule and value > rule["max"]):
             failed.append(key)
-    return ('FAIL', 'นอกเกณฑ์: '+', '.join(failed)) if failed else ('PASS', 'ผ่านเกณฑ์รุ่นที่เลือก')
+    return ("FAIL", "นอกเกณฑ์: " + ", ".join(failed)) if failed else ("PASS", "ผ่านเกณฑ์รุ่นที่เลือก")
 
 
-def summarize(samples, baseline_seconds=1., min_valid=5, min_ratio=.7):
+def summarize(samples, baseline_seconds=1.0, min_valid=5, min_ratio=0.7):
     """First baseline_seconds are a setup phase; subsequent frames are measurement.
     Missing frames are counted and not bridged into an invented trajectory.
     """
     values = {}
     if not samples:
         return values
-    start = samples[0]['t']
-    baseline = [s for s in samples if s['t']-start <= baseline_seconds]
-    active = [s for s in samples if s['t']-start > baseline_seconds]
-    for key in ['elbow','knee_shooting']:
+    start = samples[0]["t"]
+    baseline = [s for s in samples if s["t"] - start <= baseline_seconds]
+    active = [s for s in samples if s["t"] - start > baseline_seconds]
+    for key in ["elbow", "knee_shooting"]:
         x = [s.get(key) for s in active]
         good = [v for v in x if v is not None]
-        valid = len(good) >= min_valid and len(good)/max(1,len(x)) >= min_ratio
+        valid = len(good) >= min_valid and len(good) / max(1, len(x)) >= min_ratio
         summary = stats(good)
-        for part in ['mean','min','max','sd']:
-            values[f'{key}_{part}'] = summary[part] if valid else None
-    for key in ['head', 'bridge']:
+        for part in ["mean", "min", "max", "sd"]:
+            values[f"{key}_{part}"] = summary[part] if valid else None
+    for key in ["head", "bridge"]:
         base = [s[key] for s in baseline if s.get(key) is not None]
-        if len(base) < min_valid or len(base)/max(1,len(baseline)) < min_ratio:
-            values[f'{key}_mean'] = values[f'{key}_max'] = None
+        if len(base) < min_valid or len(base) / max(1, len(baseline)) < min_ratio:
+            values[f"{key}_mean"] = values[f"{key}_max"] = None
             continue
-        origin = tuple(statistics.mean(p[i] for p in base) for i in (0,1))
-        moves = [distance(s[key],origin) for s in active if s.get(key) is not None]
-        valid = len(moves)>=min_valid and len(moves)/max(1,len(active))>=min_ratio
-        for part in ['mean','max']:
-            values[f'{key}_{part}'] = stats(moves)[part] if valid else None
+        origin = tuple(statistics.mean(p[i] for p in base) for i in (0, 1))
+        moves = [distance(s[key], origin) for s in active if s.get(key) is not None]
+        valid = len(moves) >= min_valid and len(moves) / max(1, len(active)) >= min_ratio
+        for part in ["mean", "max"]:
+            values[f"{key}_{part}"] = stats(moves)[part] if valid else None
     return values

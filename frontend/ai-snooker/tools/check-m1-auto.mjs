@@ -1,56 +1,136 @@
-import assert from 'node:assert/strict';
-import {createM1AutoTrial,isTimedM1Criteria} from '../src/lib/m1AutoTrial.js';
-const timed={approved:true,template_version:'m1-elbow-shooting-leg-8s-v10',rules:{elbow_min:{min:80},elbow_max:{max:100},knee_shooting_min:{min:160},knee_shooting_max:{max:180}},minimum_active_seconds:7,protocol:{required_valid_attempts:1,minimum_pass_rate:1}};
-assert.equal(isTimedM1Criteria(timed),true);
-assert.equal(isTimedM1Criteria({...timed,template_version:'m1-elbow-legs-8s-v9'}),false);
-assert.equal(isTimedM1Criteria({...timed,template_version:'m1-elbow-legs-8s-v8'}),false);
-assert.equal(isTimedM1Criteria({...timed,template_version:'m1-elbow-legs-8s-v6'}),false);
-assert.equal(isTimedM1Criteria({...timed,template_version:'m1-elbow-legs-8s-v4'}),false);
-assert.equal(isTimedM1Criteria({...timed,template_version:'m1-timed-v1'}),false);
-assert.equal(isTimedM1Criteria({...timed,template_version:'m1-elbow-legs-v3'}),false);
-assert.equal(isTimedM1Criteria({...timed,template_version:'m1-posture-v2'}),false);
-assert.equal(isTimedM1Criteria({...timed,rules:{...timed.rules,torso_min:{min:10}}}),false);
-assert.equal(isTimedM1Criteria({...timed,rules:{elbow_sd:{max:5}}}),false);
-assert.equal(isTimedM1Criteria({...timed,approved:false}),false);
-assert.equal(isTimedM1Criteria({...timed,minimum_active_seconds:20}),false);
-assert.equal(isTimedM1Criteria({...timed,protocol:{required_valid_attempts:5,minimum_pass_rate:.8}}),false);
-assert.equal(isTimedM1Criteria({...timed,rules:{}}),false);
-let starts=0,finishes=0,latest;
-const controller=createM1AutoTrial({start:async()=>{starts++},finish:async()=>{finishes++},onChange:value=>{latest=value}});
-const frame=t=>({ready:true,frame:{t,source:'LIVE',capture_epoch_ms:2000+t*1000}});
+import assert from "node:assert/strict";
+import { createM1AutoTrial, isTimedM1Criteria } from "../src/lib/m1AutoTrial.js";
+const timed = {
+  approved: true,
+  template_version: "m1-forearm-stance-8s-v11",
+  rules: { m1_correct_frame_ratio: { min: 0.8 } },
+  frame_rules: { forearm_tilt: { max: 15 }, knee_shooting: { min: 160, max: 180 } },
+  minimum_valid_frame_ratio: 0.8,
+  preparation_lean_min: 30,
+  minimum_active_seconds: 7,
+  protocol: { required_valid_attempts: 1, minimum_pass_rate: 1 },
+};
+assert.equal(isTimedM1Criteria(timed), true);
+assert.equal(isTimedM1Criteria({ ...timed, template_version: "m1-elbow-legs-8s-v9" }), false);
+assert.equal(isTimedM1Criteria({ ...timed, template_version: "m1-elbow-legs-8s-v8" }), false);
+assert.equal(isTimedM1Criteria({ ...timed, template_version: "m1-elbow-legs-8s-v6" }), false);
+assert.equal(isTimedM1Criteria({ ...timed, template_version: "m1-elbow-legs-8s-v4" }), false);
+assert.equal(isTimedM1Criteria({ ...timed, template_version: "m1-timed-v1" }), false);
+assert.equal(isTimedM1Criteria({ ...timed, template_version: "m1-elbow-legs-v3" }), false);
+assert.equal(isTimedM1Criteria({ ...timed, template_version: "m1-posture-v2" }), false);
+assert.equal(
+  isTimedM1Criteria({ ...timed, rules: { ...timed.rules, torso_min: { min: 10 } } }),
+  false,
+);
+assert.equal(isTimedM1Criteria({ ...timed, rules: { elbow_sd: { max: 5 } } }), false);
+assert.equal(isTimedM1Criteria({ ...timed, approved: false }), false);
+assert.equal(isTimedM1Criteria({ ...timed, minimum_active_seconds: 20 }), false);
+assert.equal(
+  isTimedM1Criteria({ ...timed, protocol: { required_valid_attempts: 5, minimum_pass_rate: 0.8 } }),
+  false,
+);
+assert.equal(isTimedM1Criteria({ ...timed, rules: {} }), false);
+let starts = 0,
+  finishes = 0,
+  latest;
+const controller = createM1AutoTrial({
+  start: async () => {
+    starts++;
+  },
+  finish: async () => {
+    finishes++;
+  },
+  onChange: (value) => {
+    latest = value;
+  },
+});
+const frame = (t) => ({
+  ready: true,
+  frame: { t, source: "LIVE", capture_epoch_ms: 2000 + t * 1000 },
+});
 controller.arm(2000);
-await controller.update(frame(0),true);
-await controller.update({...frame(.5),ready:false},true);
-await controller.update(frame(.6),true);
-await controller.update(frame(1.5),true);assert.equal(starts,0);
-await Promise.all([controller.update(frame(1.7),true),controller.update(frame(1.8),true)]);
-assert.equal(starts,0);assert.equal(latest.phase,'COUNTDOWN');assert.equal(latest.remaining,5);
-for(const t of [2.2,3.1,4,4.9,5.8,6.6])await controller.update(frame(t),true);
-assert.equal(starts,0);assert.equal(latest.remaining,1);
-await Promise.all([controller.update(frame(6.7),true),controller.update(frame(6.8),true)]);
-assert.equal(starts,1);assert.equal(latest.phase,'RECORDING');
-await controller.update({...frame(15),attempt_id:'a'},true);assert.equal(finishes,0);
-await controller.update({...frame(16),attempt_id:'a',recording_limit_reached:true},false);assert.equal(finishes,0);
-await Promise.all([controller.update({...frame(16),attempt_id:'a',recording_limit_reached:true},true),controller.update({...frame(16),attempt_id:'a',recording_limit_reached:true},true)]);
-assert.equal(finishes,1);assert.equal(latest.phase,'DONE');
+await controller.update(frame(0), true);
+await controller.update({ ...frame(0.5), ready: false }, true);
+await controller.update(frame(0.6), true);
+await controller.update(frame(1.5), true);
+assert.equal(starts, 0);
+await Promise.all([controller.update(frame(1.7), true), controller.update(frame(1.8), true)]);
+assert.equal(starts, 0);
+assert.equal(latest.phase, "COUNTDOWN");
+assert.equal(latest.remaining, 5);
+for (const t of [2.2, 3.1, 4, 4.9, 5.8, 6.6]) await controller.update(frame(t), true);
+assert.equal(starts, 0);
+assert.equal(latest.remaining, 1);
+await Promise.all([controller.update(frame(6.7), true), controller.update(frame(6.8), true)]);
+assert.equal(starts, 1);
+assert.equal(latest.phase, "RECORDING");
+await controller.update({ ...frame(15), attempt_id: "a" }, true);
+assert.equal(finishes, 0);
+await controller.update({ ...frame(16), attempt_id: "a", recording_limit_reached: true }, false);
+assert.equal(finishes, 0);
+await Promise.all([
+  controller.update({ ...frame(16), attempt_id: "a", recording_limit_reached: true }, true),
+  controller.update({ ...frame(16), attempt_id: "a", recording_limit_reached: true }, true),
+]);
+assert.equal(finishes, 1);
+assert.equal(latest.phase, "DONE");
 controller.arm(50000);
-await controller.update(frame(20),true);await controller.update(frame(21),true);assert.equal(starts,1);
-controller.cancel();await controller.update(frame(100),true);assert.equal(starts,1);
-controller.arm(0);await controller.update({...frame(100),frame:{t:100,source:'DEMO',capture_epoch_ms:1e9}},true);assert.equal(starts,1);
+await controller.update(frame(20), true);
+await controller.update(frame(21), true);
+assert.equal(starts, 1);
 controller.cancel();
-const failing=createM1AutoTrial({start:async()=>{throw new Error('database unavailable')},finish:async()=>{},onChange:value=>{latest=value}});
-failing.arm(0);await failing.update(frame(0),true);await failing.update(frame(1),true);
-for(const t of [2,3,4,5,6])await failing.update(frame(t),true);
-assert.equal(latest.phase,'ERROR');assert.match(latest.error,/database/);
+await controller.update(frame(100), true);
+assert.equal(starts, 1);
+controller.arm(0);
+await controller.update(
+  { ...frame(100), frame: { t: 100, source: "DEMO", capture_epoch_ms: 1e9 } },
+  true,
+);
+assert.equal(starts, 1);
+controller.cancel();
+const failing = createM1AutoTrial({
+  start: async () => {
+    throw new Error("database unavailable");
+  },
+  finish: async () => {},
+  onChange: (value) => {
+    latest = value;
+  },
+});
+failing.arm(0);
+await failing.update(frame(0), true);
+await failing.update(frame(1), true);
+for (const t of [2, 3, 4, 5, 6]) await failing.update(frame(t), true);
+assert.equal(latest.phase, "ERROR");
+assert.match(latest.error, /database/);
 let resetPhase;
-const resetting=createM1AutoTrial({start:async()=>{throw new Error('must not start')},finish:async()=>{},onChange:value=>{resetPhase=value}});
-resetting.arm(0);await resetting.update(frame(0),true);await resetting.update(frame(1),true);
-assert.equal(resetPhase.phase,'COUNTDOWN');
-await resetting.update({...frame(2),ready:false},true);assert.equal(resetPhase.phase,'WAITING');
-await resetting.update(frame(2.1),true);await resetting.update(frame(3.2),true);
-assert.equal(resetPhase.phase,'WAITING'); // A frame gap restarts readiness too.
-await resetting.update(frame(4.2),true);assert.equal(resetPhase.phase,'COUNTDOWN');
-await resetting.update(frame(4.3),false);assert.equal(resetPhase.phase,'WAITING');
-await resetting.update(frame(5),true);await resetting.update(frame(6),true);assert.equal(resetPhase.phase,'COUNTDOWN');
-resetting.cancel();assert.equal(resetPhase.phase,'IDLE');
-console.log('M1 automatic trial checks passed: five-second preparation, reset on lost points/gap/disconnect, cancel, fresh LIVE frames, single start/finish, error');
+const resetting = createM1AutoTrial({
+  start: async () => {
+    throw new Error("must not start");
+  },
+  finish: async () => {},
+  onChange: (value) => {
+    resetPhase = value;
+  },
+});
+resetting.arm(0);
+await resetting.update(frame(0), true);
+await resetting.update(frame(1), true);
+assert.equal(resetPhase.phase, "COUNTDOWN");
+await resetting.update({ ...frame(2), ready: false }, true);
+assert.equal(resetPhase.phase, "WAITING");
+await resetting.update(frame(2.1), true);
+await resetting.update(frame(3.2), true);
+assert.equal(resetPhase.phase, "WAITING"); // A frame gap restarts readiness too.
+await resetting.update(frame(4.2), true);
+assert.equal(resetPhase.phase, "COUNTDOWN");
+await resetting.update(frame(4.3), false);
+assert.equal(resetPhase.phase, "WAITING");
+await resetting.update(frame(5), true);
+await resetting.update(frame(6), true);
+assert.equal(resetPhase.phase, "COUNTDOWN");
+resetting.cancel();
+assert.equal(resetPhase.phase, "IDLE");
+console.log(
+  "M1 automatic trial checks passed: five-second preparation, reset on lost points/gap/disconnect, cancel, fresh LIVE frames, single start/finish, error",
+);

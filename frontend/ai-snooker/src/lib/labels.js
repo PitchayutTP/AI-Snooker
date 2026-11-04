@@ -1,10 +1,34 @@
 export const labels = {
-  ...Object.fromEntries(Object.entries({elbow:'มุมศอก',torso:'มุมลำตัวกับแนวนอน',stance:'ระยะข้อเท้า',knee_shooting:'มุมเข่าฝั่งแทง',knee_support:'มุมเข่าฝั่งสะพานมือ'}).flatMap(([key,label])=>Object.entries({mean:'เฉลี่ย',min:'ต่ำสุด',max:'สูงสุด',sd:' (SD)'}).map(([part,suffix])=>[`${key}_${part}`,`${label}${suffix}`]))),
-  cue_deviation_ratio:'คิวเบี่ยงเบนสูงสุด/ระยะมาร์กเกอร์',
-  head_motion_ratio:'ศีรษะเคลื่อนสูงสุด/ระยะมาร์กเกอร์',
-  bridge_motion_ratio:'สะพานมือเคลื่อนสูงสุด/ระยะมาร์กเกอร์',
-  center_aim_ratio:'แนวเล็งคลาดเคลื่อน/ระยะมาร์กเกอร์ (ประมาณ)',
-  follow_through_ratio:'Follow-through/ระยะมาร์กเกอร์ (ประมาณ)',
+  m2_gate_clear: "น้ำเงินผ่านช่องแดงตามค่าประมาณในภาพ (1 = ผ่าน, 0 = ไม่ผ่าน)",
+  m2_red4_reached: "หัวคิวถึงแนวเป้าหมาย (1 = ถึง, 0 = ไม่ถึง)",
+  m2_tip_margin_mm: "ระยะหัวคิวเลยแนวเป้าหมายสูงสุด",
+  m2_tip_advance_mm: "ระยะส่งหัวคิวตามจากช่วงฐานสูงสุด",
+  m1_valid_frame_ratio: "สัดส่วนเฟรมที่วัดแขนและขาร่วมกันได้",
+  m1_correct_frame_ratio: "สัดส่วนเฟรมที่แขนและขาถูกพร้อมกัน",
+  ...Object.fromEntries(
+    Object.entries({ mean: "เฉลี่ย", min: "ต่ำสุด", max: "สูงสุด" }).map(([p, v]) => [
+      `forearm_tilt_${p}`,
+      `ท่อนแขนเอียงจากแนวดิ่ง${v}`,
+    ]),
+  ),
+  ...Object.fromEntries(
+    Object.entries({
+      elbow: "มุมศอก",
+      torso: "มุมลำตัวกับแนวนอน",
+      stance: "ระยะข้อเท้า",
+      knee_shooting: "มุมเข่าฝั่งแทง",
+      knee_support: "มุมเข่าฝั่งสะพานมือ",
+    }).flatMap(([key, label]) =>
+      Object.entries({ mean: "เฉลี่ย", min: "ต่ำสุด", max: "สูงสุด", sd: " (SD)" }).map(
+        ([part, suffix]) => [`${key}_${part}`, `${label}${suffix}`],
+      ),
+    ),
+  ),
+  cue_deviation_ratio: "คิวเบี่ยงเบนสูงสุด/ระยะมาร์กเกอร์",
+  head_motion_ratio: "ศีรษะเคลื่อนสูงสุด/ระยะมาร์กเกอร์",
+  bridge_motion_ratio: "สะพานมือเคลื่อนสูงสุด/ระยะมาร์กเกอร์",
+  center_aim_ratio: "แนวเล็งคลาดเคลื่อน/ระยะมาร์กเกอร์ (ประมาณ)",
+  follow_through_ratio: "Follow-through/ระยะมาร์กเกอร์ (ประมาณ)",
   elbow_mean: "มุมศอกเฉลี่ย",
   elbow_sd: "SD มุมศอก",
   torso_mean: "มุมลำตัวเฉลี่ย",
@@ -22,4 +46,3 @@ export const labels = {
   contact_fraction: "เหลี่ยมประมาณ",
   fraction_error: "ความคลาดเคลื่อนเหลี่ยม",
 };
-

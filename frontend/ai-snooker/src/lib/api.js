@@ -9,16 +9,19 @@ export async function api(path, body) {
   if (!response.ok) {
     if (response.status === 401 && !path.startsWith("/auth/"))
       window.dispatchEvent(new Event("auth-expired"));
-    const missingCriteriaApi=response.status===404 && path.includes('/criteria-template') && data.detail==='Not Found';
+    const missingCriteriaApi =
+      response.status === 404 && path.includes("/criteria-template") && data.detail === "Not Found";
     const message = missingCriteriaApi
-      ? 'Backend ไม่พบ API เกณฑ์รุ่นใหม่ กรุณาหยุด Backend ด้วย Ctrl+C แล้วเปิดใหม่จากโฟลเดอร์ AI-Snooker ปัจจุบัน จากนั้นรีเฟรชหน้าเว็บ'
+      ? "Backend ไม่พบ API เกณฑ์รุ่นใหม่ กรุณาหยุด Backend ด้วย Ctrl+C แล้วเปิดใหม่จากโฟลเดอร์ AI-Snooker ปัจจุบัน จากนั้นรีเฟรชหน้าเว็บ"
       : typeof data.detail === "string"
         ? data.detail
         : Array.isArray(data.detail)
-          ? data.detail.map((x) => {
-              const field = (x.loc || []).filter(part => part !== "body").join(".");
-              return field ? `${field}: ${x.msg}` : x.msg;
-            }).join(" / ")
+          ? data.detail
+              .map((x) => {
+                const field = (x.loc || []).filter((part) => part !== "body").join(".");
+                return field ? `${field}: ${x.msg}` : x.msg;
+              })
+              .join(" / ")
           : `เกิดข้อผิดพลาด (${response.status})`;
     const error = new Error(message);
     error.status = response.status;
@@ -27,16 +30,13 @@ export async function api(path, body) {
   return data;
 }
 export const number = (value) =>
-  value == null || !Number.isFinite(Number(value))
-    ? "—"
-    : Number(value).toFixed(2);
-export const angleNumber = value => value == null || !Number.isFinite(Number(value)) ? '—' : Number(value).toFixed(1);
+  value == null || !Number.isFinite(Number(value)) ? "—" : Number(value).toFixed(2);
+export const angleNumber = (value) =>
+  value == null || !Number.isFinite(Number(value)) ? "—" : Number(value).toFixed(1);
 export const date = (value) =>
   value
     ? new Date(
-        value.endsWith("Z") || /[+-]\d\d:\d\d$/.test(value)
-          ? value
-          : `${value}Z`,
+        value.endsWith("Z") || /[+-]\d\d:\d\d$/.test(value) ? value : `${value}Z`,
       ).toLocaleString("th-TH")
     : "—";
 export const names = {

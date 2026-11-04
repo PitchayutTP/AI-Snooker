@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "node tools/check-all.mjs"
   },
   "dependencies": {
     "react": "^19.2.7",
@@ -21,6 +24,7 @@
     "eslint": "^10.6.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.7.0",
+    "prettier": "^3.9.10",
     "vite": "^8.1.1"
   }
 }

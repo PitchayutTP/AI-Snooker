@@ -1,3 +1,3 @@
-// WPBSA rulebook Section 1: playing area inside cushion faces, millimetres.
-export const STANDARD_TABLE = { width:3569, height:1778, radius:26.25 };
-export const TABLE_RULES_URL='https://wpbsa.com/wp-content/uploads/2198_WPBSA-Rulebook-2024-25.pdf';
+// Fixed measured practice area, millimetres.
+export const PRACTICE_AREA = Object.freeze({ width: 1500, height: 750, radius: 26.25 });
+export const M2_CALIBRATION_LIMIT_MM = 20;

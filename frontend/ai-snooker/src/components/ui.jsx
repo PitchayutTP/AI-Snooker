@@ -33,4 +33,3 @@ export function Table({ headings, children }) {
     </div>
   );
 }
-

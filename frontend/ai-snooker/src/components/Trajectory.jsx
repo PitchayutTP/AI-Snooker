@@ -23,8 +23,8 @@ export function Trajectory({ status }) {
     <section className="panel">
       <h2>เส้นทางลูกระหว่างบันทึก</h2>
       <p className="muted">
-        แสดงจุดที่ตรวจจับได้สูงสุด 300 จุดต่อเส้นจาก WebSocket ไม่ใช่ภาพทุกเฟรม
-        หลักฐานใน JSON ใช้ข้อมูลที่ Backend บันทึก
+        แสดงจุดที่ตรวจจับได้สูงสุด 300 จุดต่อเส้นจาก WebSocket ไม่ใช่ภาพทุกเฟรม หลักฐานใน JSON
+        ใช้ข้อมูลที่ Backend บันทึก
       </p>
       <svg
         viewBox={`0 0 ${width} ${height}`}
